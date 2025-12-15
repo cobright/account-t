@@ -89,7 +89,7 @@ def generate_ai_solution(question_data):
     """AI 실시간 해설 생성"""
     if not GEMINI_AVAILABLE: return None
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         prompt = f"""
         당신은 회계학 강사입니다. 다음 문제의 '단계별 해설'을 JSON으로 작성하세요.
         [문제] {question_data.get('content_markdown', '')}
