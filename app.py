@@ -1,61 +1,80 @@
 import streamlit as st
 import pandas as pd
 import json
-import google.generativeai as genai
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 from pathlib import Path
 
 # =========================================================
-# 1. 설정 및 데이터 로딩
+# 1. 시스템 설정 및 Firebase 초기화
 # =========================================================
-st.set_page_config(page_title="Accoun-T Master", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Accoun-T Cloud", layout="wide", page_icon="☁️")
 
-BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / "db" / "question_db.json"
-CURRICULUM_PATH = BASE_DIR / "db" / "curriculum.json"
+# [수정 후] Secrets에서 읽기 (붙여넣으세요)
+# .toml 파일에 적은 [firestore] 섹션을 딕셔너리로 가져옴
+key_dict = dict(st.secrets["firestore"])
 
-# 세션 상태 초기화 (API 키 저장 등)
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
+# Streamlit의 toml 파서가 \n을 문자로 인식할 수 있어서 줄바꿈 문자 처리
+if "private_key" in key_dict:
+    key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
-@st.cache_data
-def load_data():
-    questions = []
-    curriculum = []
-    if DB_PATH.exists():
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            questions = json.load(f)
-    if CURRICULUM_PATH.exists():
-        with open(CURRICULUM_PATH, "r", encoding="utf-8") as f:
-            curriculum = json.load(f)
-    return questions, curriculum
+cred = credentials.Certificate(key_dict)
 
-def save_solution_to_db(q_id, solution_steps):
-    """생성된 AI 풀이를 JSON DB에 업데이트 및 저장"""
+# 이후 코드는 동일
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+st.session_state.firestore_db = firestore.client()
+
+# 세션 캐싱을 이용해 한 번만 연결
+if "firestore_db" not in st.session_state:
+    # 앱이 리로드될 때마다 초기화되지 않도록 처리
+    if not firebase_admin._apps:
+        try:
+            cred = credentials.Certificate(KEY_PATH)
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.error(f"🔥 Firebase 연결 실패: {e}")
+            st.stop()
+    st.session_state.firestore_db = firestore.client()
+
+db = st.session_state.firestore_db
+
+# =========================================================
+# 2. 데이터 핸들링 함수 (CRUD with Firestore)
+# =========================================================
+@st.cache_data(ttl=60) # 60초마다 캐시 갱신 (데이터 절약)
+def get_all_questions():
+    """모든 문제 가져오기"""
+    docs = db.collection("questions").stream()
+    # Firestore 문서를 딕셔너리로 변환
+    return [doc.to_dict() for doc in docs]
+
+def save_question(question_data):
+    """문제 저장 또는 수정 (Upsert)"""
     try:
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        # 해당 문제 찾아서 solution_steps 추가
-        for q in data:
-            if q['question_id'] == q_id:
-                q['solution_steps'] = solution_steps
-                break
-        
-        with open(DB_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        # 캐시 비우기 (새로고침 시 반영되도록)
-        load_data.clear()
+        q_id = question_data['question_id']
+        db.collection("questions").document(q_id).set(question_data)
+        get_all_questions.clear() # 캐시 초기화 (즉시 반영)
         return True
     except Exception as e:
-        st.error(f"DB 저장 실패: {e}")
+        st.error(f"저장 실패: {e}")
+        return False
+
+def delete_question(q_id):
+    """문제 삭제"""
+    try:
+        db.collection("questions").document(q_id).delete()
+        get_all_questions.clear() # 캐시 초기화
+        return True
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
         return False
 
 # =========================================================
-# 2. 로직 함수 (계산기 & AI 솔버)
+# 3. PV 엔진 로직 (기존과 동일)
 # =========================================================
 def calculate_bond_schedule(face, c_rate, m_rate, periods):
-    # --- 1. 계산 로직 (숫자 다루기) ---
     cash_flow = face * c_rate
     pv_principal = face / ((1 + m_rate) ** periods)
     pv_interest = sum([cash_flow / ((1 + m_rate) ** t) for t in range(1, periods + 1)])
@@ -64,13 +83,12 @@ def calculate_bond_schedule(face, c_rate, m_rate, periods):
     data = []
     book_value = issue_price
     
-    # 기간 0 (문자열로 미리 포맷팅)
     data.append({
         "기간": 0,
-        f"유효이자({int(m_rate*100)}%)": "",   # 빈칸
-        f"액면이자({int(c_rate*100)}%)": "",   # 빈칸
-        "상각액": "",                         # 빈칸
-        "장부금액": f"{int(book_value):,}"    # 콤마 찍은 문자열
+        f"유효이자({int(m_rate*100)}%)": "",
+        f"액면이자({int(c_rate*100)}%)": "",
+        "상각액": "",
+        "장부금액": f"{int(book_value):,}"
     })
     
     for t in range(1, periods + 1):
@@ -82,207 +100,109 @@ def calculate_bond_schedule(face, c_rate, m_rate, periods):
         
         data.append({
             "기간": t,
-            f"유효이자({int(m_rate*100)}%)": f"{int(round(interest_exp, 0)):,}", # 콤마 포맷팅
+            f"유효이자({int(m_rate*100)}%)": f"{int(round(interest_exp, 0)):,}",
             f"액면이자({int(c_rate*100)}%)": f"{int(round(coupon, 0)):,}",
             "상각액": f"{int(round(amort, 0)):,}",
             "장부금액": f"{int(round(end_bv, 0)):,}"
         })
         book_value = end_bv
         
-    # --- 2. 출력용 데이터프레임 ---
     df = pd.DataFrame(data).set_index("기간")
-    
-    return issue_price, df    
-
-def generate_ai_solution(api_key, question_data):
-    """Gemini API를 호출하여 단계별 풀이 생성"""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    
-    prompt = f"""
-    당신은 친절한 회계학 1타 강사입니다. 아래 문제를 보고 수험생이 이해하기 쉬운 '단계별 풀이'를 작성해주세요.
-    
-    [문제]
-    {question_data['content_markdown']}
-    
-    [요청사항]
-    반드시 아래 JSON 형식으로만 답변하세요. (마크다운 코드블록 없이 순수 JSON)
-    
-    [
-      {{"step": 1, "title": "문제 분석 및 출제 의도", "content": "이 문제는 사채의... 를 묻고 있습니다."}},
-      {{"step": 2, "title": "핵심 계산 과정", "content": "1. 유효이자 = ... \\n 2. 상각액 = ..."}},
-      {{"step": 3, "title": "최종 정답 도출", "content": "따라서 정답은..."}}
-    ]
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
-    except Exception as e:
-        st.error(f"AI 호출 중 오류 발생: {e}")
-        return None
+    return issue_price, df
 
 # =========================================================
-# 3. 메인 UI
+# 4. 메인 UI
 # =========================================================
-questions_data, curriculum_data = load_data()
+st.title("☁️ Accoun-T Cloud")
 
 with st.sidebar:
-    st.title("🎓 Accoun-T Campus")
-    
-    # API 키 입력 (보안을 위해 비밀번호 형태)
-    api_input = st.text_input("Gemini API Key", type="password", placeholder="AI 풀이 생성 시 필요")
-    if api_input:
-        st.session_state.api_key = api_input
-        
-    mode = st.radio("학습 모드", ["정규 커리큘럼 (이론)", "자율 학습 (연습/기출)"])
+    st.header("Controller")
+    menu = st.radio("메뉴 이동", ["학습 모드 (Student)", "관리자 모드 (Admin)"])
     st.divider()
-    st.caption(f"📚 커리큘럼: {len(curriculum_data)}개 | 💾 기출문제: {len(questions_data)}개")
-
-# ---------------------------------------------------------
-# MODE A: 정규 커리큘럼 (기존 코드 유지)
-# ---------------------------------------------------------
-if mode == "정규 커리큘럼 (이론)":
-    st.header("📖 개념 완성 코스")
-    # ... (이전 코드와 동일하므로 생략 없이 필요한 부분만 기술) ...
-    # (사용자 편의를 위해 이 부분은 이전 턴의 코드를 그대로 두시면 됩니다. 
-    #  혹시 코드가 길어 생략되었다면 이전 턴의 '정규 커리큘럼' 부분 로직을 그대로 사용하세요.)
     
-    course_titles = [c['title'] for c in curriculum_data]
-    if not course_titles:
-        st.warning("커리큘럼 데이터가 없습니다.")
-    else:
-        sel_course = st.selectbox("수강할 코스", course_titles)
-        course = next(c for c in curriculum_data if c['title'] == sel_course)
-        st.markdown(f"> {course['description']}")
-        
-        ch_titles = [f"{ch['step']}. {ch['title']}" for ch in course['chapters']]
-        sel_ch_str = st.radio("목차", ch_titles, horizontal=True)
-        chapter = course['chapters'][ch_titles.index(sel_ch_str)]
-        preset = chapter['preset_values']
-        
-        c_txt, c_sim = st.columns([1, 1.2])
-        with c_txt:
-            st.subheader(chapter['title'])
-            st.markdown(chapter['content_markdown'])
-        with c_sim:
-            st.subheader("🖥️ Simulator")
-            # 시뮬레이터 UI
-            p_face = st.number_input("액면금액", value=preset['face_value'], step=10000)
-            c1, c2 = st.columns(2)
-            with c1: p_crate = st.number_input("표시이자(%)", value=preset['coupon_rate']*100) / 100
-            with c2: p_mrate = st.number_input("시장이자(%)", value=preset['market_rate']*100) / 100
-            p_years = st.slider("만기", 1, 5, preset['years'])
-            
-            # [수정] 시뮬레이터 출력 부분 (Tab 1, Curriculum 등 모든 곳에 적용)
+    # DB 현황 (클라우드에서 가져옴)
+    questions = get_all_questions()
+    st.info(f"🔥 Firebase 연동 중\n등록된 문제: {len(questions)}개")
 
-            # 1. 계산 실행
-            price, df_display = calculate_bond_schedule(p_face, p_crate, p_mrate, p_years)
-
-            # 2. 결과 카드 (발행가액 등)
-            # m1, m2 = st.columns(2)
-            # m1.metric("발행금액 (PV)", f"{int(price):,}원")
-            # m2.metric("할인/할증 차금", f"{int(price - p_face):,}원")
-
-            # 3. 그래프 (선택사항 - 흐름 보기에 좋으므로 유지 추천)
-            # (그래프 그릴 땐 df_display 대신 숫자가 있는 원본 df가 필요하므로, 위 함수에서 df와 df_display 둘 다 리턴받는 게 좋음.
-            #  하지만 간단히 하려면 df_display에서 '장부금액'만 뽑아서 그려도 됨)
-            # st.line_chart(df_display['장부금액'])
-
-            # 4. [핵심] 상각표 출력 (시험지 스타일)
-            st.subheader("📋 상각표 (Amortization Schedule)")
-            st.dataframe(
-                df_display,
-                use_container_width=True,
-                column_config={
-                    # 각 컬럼별로 천 단위 콤마 포맷 지정 (문자열 빈칸이 섞여 있어도 작동하도록 NumberColumn 아님 TextColumn으로 인식될 수 있음)
-                    # 팁: df_display가 이미 object 타입이므로, 데이터 자체가 깔끔해야 함.
-                    # 가장 확실한 방법은 위 함수 calculate_bond_schedule에서 포맷팅까지 끝내는 것임.
-                }
-            )
-
-# ---------------------------------------------------------
-# MODE B: 자율 학습 (AI 풀이 기능 탑재)
-# ---------------------------------------------------------
-elif mode == "자율 학습 (연습/기출)":
-    st.header("🏋️ 자율 트레이닝 센터")
-    tab_exam, tab_drill = st.tabs(["🔥 기출 실전", "⚡ 기본 훈련"]) # 순서 살짝 변경
+# [A] 학습 모드
+if menu == "학습 모드 (Student)":
+    tab1, tab2 = st.tabs(["🧪 이론 시뮬레이터", "🔥 기출 실전 풀이"])
     
-    with tab_exam:
-        # 엔진 필터링
-        engine_list = list(set([q['engine_type'] for q in questions_data])) if questions_data else []
-        sel_eng = st.selectbox("엔진 필터", engine_list) if engine_list else None
-        
-        filtered_q = [q for q in questions_data if q['engine_type'] == sel_eng] if sel_eng else questions_data
-        
-        if not filtered_q:
+    with tab1:
+        st.subheader("사채(Bonds) 시뮬레이터")
+        col_input, col_view = st.columns([1, 2])
+        with col_input:
+            face = st.number_input("액면금액", 100000, step=10000)
+            crate = st.number_input("표시이자(%)", 5.0) / 100
+            mrate = st.number_input("시장(유효)이자(%)", 8.0) / 100
+            years = st.slider("만기", 1, 5, 3)
+        with col_view:
+            price, df = calculate_bond_schedule(face, crate, mrate, years)
+            st.metric("발행금액", f"{int(price):,}원")
+            st.table(df)
+
+    with tab2:
+        st.subheader("기출문제 풀이")
+        if not questions:
             st.warning("등록된 문제가 없습니다.")
         else:
-            # 문제 선택
-            q_map = {q['question_id']: f"[{q['difficulty']}] {q['topic']}" for q in filtered_q}
-            sel_qid = st.selectbox("문제 선택", list(q_map.keys()), format_func=lambda x: q_map[x])
-            q_data = next(q for q in filtered_q if q['question_id'] == sel_qid)
+            q_map = {q['question_id']: f"[{q.get('exam_info',{}).get('year','-')}] {q['topic']}" for q in questions}
+            sel_id = st.selectbox("문제 선택", list(q_map.keys()), format_func=lambda x: q_map[x])
+            q_item = next(q for q in questions if q['question_id'] == sel_id)
             
             st.divider()
-            col_q, col_sol = st.columns([1, 1])
-            
-            # [좌측] 문제 영역
-            with col_q:
-                st.markdown(f"### Q. {q_data['topic']}")
-                st.markdown(q_data['content_markdown'])
-                st.write("---")
-                
-                # [수정됨] 보기 데이터가 있으면 가져와서 표시
-                choices = q_data.get('choices', {})
-                
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.markdown(f"**Q. {q_item['topic']}**")
+                st.markdown(q_item['content_markdown'])
+                choices = q_item.get('choices', {})
                 if choices:
-                    # 딕셔너리를 "번호. 내용" 형식의 리스트로 변환 (예: "1. 50,000원")
-                    # 키(key) 순서대로 정렬하여 리스트 생성
-                    options = [f"{k}. {v}" for k, v in sorted(choices.items())]
-                else:
-                    # 데이터가 없을 경우 기본값 표시
-                    options = ["1", "2", "3", "4", "5"]
+                    opts = [f"{k}. {v}" for k, v in sorted(choices.items())]
+                    st.radio("정답", opts, label_visibility="collapsed")
+            with c2:
+                with st.expander("💡 정답 및 해설"):
+                    st.success(f"정답: {q_item.get('answer', '?')}")
+                    if q_item.get('key_variables'):
+                        st.json(q_item['key_variables'])
 
-                # 라디오 버튼 생성
-                user_ans_str = st.radio("정답을 선택하세요", options)
+# [B] 관리자 모드
+elif menu == "관리자 모드 (Admin)":
+    st.header("🛠️ 클라우드 DB 관리")
+    
+    at1, at2 = st.tabs(["📥 문제 등록", "🗑️ 문제 관리"])
+    
+    with at1:
+        st.markdown("Gemini JSON 코드를 붙여넣으세요. (자동으로 Cloud에 저장됨)")
+        json_input = st.text_area("JSON Input", height=200)
+        if st.button("서버에 저장"):
+            try:
+                new_items = json.loads(json_input)
+                if not isinstance(new_items, list): new_items = [new_items]
                 
-                if st.button("정답 확인"):
-                    # DB상의 정답 번호 (문자열로 변환)
-                    correct_ans = str(q_data.get('answer'))
-                    
-                    # 사용자가 선택한 문자열에서 번호만 추출 ("1. 50,000원" -> "1")
-                    selected_no = user_ans_str.split('.')[0].strip()
-                    
-                    if selected_no == correct_ans:
-                        st.success(f"🎉 정답입니다! ({correct_ans}번)")
-                        st.balloons() # 정답 축하 효과
-                    else:
-                        st.error(f"❌ 틀렸습니다. 정답은 **{correct_ans}번** 입니다")
+                success_cnt = 0
+                for item in new_items:
+                    if save_question(item): success_cnt += 1
+                
+                st.success(f"{success_cnt}건 저장 완료!")
+                st.balloons()
+            except Exception as e:
+                st.error(f"오류: {e}")
 
-            # [우측] AI 풀이 영역
-            with col_sol:
-                st.markdown("### 💡 AI 튜터의 해설")
-                
-                # 1. DB에 이미 풀이가 있는지 확인 (캐싱 체크)
-                if "solution_steps" in q_data and q_data['solution_steps']:
-                    st.success("✅ 저장된 풀이를 불러왔습니다.")
-                    steps = q_data['solution_steps']
-                    for step in steps:
-                        with st.expander(f"STEP {step['step']}: {step['title']}"):
-                            st.markdown(step['content'])
-                            
-                # 2. 풀이가 없으면 AI 호출 버튼 표시
-                else:
-                    st.info("아직 저장된 해설이 없습니다.")
-                    if st.button("🤖 AI에게 단계별 풀이 요청하기"):
-                        if not st.session_state.api_key:
-                            st.error("사이드바에 API Key를 먼저 입력해주세요!")
-                        else:
-                            with st.spinner("Gemini가 문제를 분석하고 해설을 작성 중입니다..."):
-                                # AI 호출
-                                solution = generate_ai_solution(st.session_state.api_key, q_data)
-                                if solution:
-                                    # DB 저장
-                                    if save_solution_to_db(q_data['question_id'], solution):
-                                        st.rerun() # 화면 새로고침해서 풀이 표시
+    with at2:
+        st.markdown("등록된 문제 목록 (실시간 연동)")
+        if questions:
+            df_list = []
+            for q in questions:
+                df_list.append({
+                    "ID": q['question_id'], 
+                    "주제": q['topic'], 
+                    "엔진": q.get('engine_type','-')
+                })
+            st.dataframe(pd.DataFrame(df_list), use_container_width=True)
+            
+            st.divider()
+            del_id = st.selectbox("삭제할 문제 ID", [q['question_id'] for q in questions])
+            if st.button("선택한 문제 삭제"):
+                if delete_question(del_id):
+                    st.success("삭제되었습니다.")
+                    st.rerun()
