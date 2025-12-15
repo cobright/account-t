@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
-import google.generativeai as genai  # [복구] AI 실시간 호출용
+import google.generativeai as genai
 
 # =========================================================
 # 1. 시스템 설정 및 초기화
@@ -26,12 +26,14 @@ if "firestore_db" not in st.session_state:
 
 db = st.session_state.firestore_db
 
-# (2) Gemini API 초기화 (실시간 풀이용)
-# secrets.toml에 [gemini] api_key = "..." 가 있어야 함 (없으면 버튼 비활성 처리)
+# (2) Gemini API 초기화
 GEMINI_AVAILABLE = False
 if "gemini" in st.secrets:
-    genai.configure(api_key=st.secrets["gemini"]["api_key"])
-    GEMINI_AVAILABLE = True
+    try:
+        genai.configure(api_key=st.secrets["gemini"]["api_key"])
+        GEMINI_AVAILABLE = True
+    except:
+        pass
 
 # =========================================================
 # 2. CRUD 및 로직 함수
@@ -39,11 +41,15 @@ if "gemini" in st.secrets:
 @st.cache_data(ttl=60)
 def get_all_questions():
     """모든 문제 가져오기"""
-    docs = db.collection("questions").stream()
-    return [doc.to_dict() for doc in docs]
+    try:
+        docs = db.collection("questions").stream()
+        return [doc.to_dict() for doc in docs]
+    except Exception as e:
+        st.error(f"DB 읽기 오류: {e}")
+        return []
 
 def save_question_batch(items):
-    """문제 대량 등록 (기존 덮어쓰기)"""
+    """문제 대량 등록"""
     batch = db.batch()
     count = 0
     for item in items:
@@ -51,24 +57,26 @@ def save_question_batch(items):
             doc_ref = db.collection("questions").document(item['question_id'])
             batch.set(doc_ref, item)
             count += 1
-            # Firestore 배치 제한(500개) 고려하여 중간 커밋 가능 (여기선 생략)
     batch.commit()
     get_all_questions.clear()
     return count
 
 def update_solution_batch(items):
-    """[핵심] 해설 대량 업데이트 (ID 매칭)"""
+    """해설 대량 업데이트 (키 이름 호환성 처리 포함)"""
     batch = db.batch()
     count = 0
-    valid_ids = [q['question_id'] for q in get_all_questions()] # 존재하는 ID만 체크
+    
+    # 현재 DB에 있는 유효한 ID 목록 가져오기
+    valid_ids = {q['question_id'] for q in get_all_questions() if 'question_id' in q}
     
     for item in items:
         q_id = item.get('question_id')
-        steps = item.get('solution_steps')
+        
+        # 사용자가 'steps'라고 썼든 'solution_steps'라고 썼든 다 받아줌
+        steps = item.get('solution_steps') or item.get('steps')
         
         if q_id and steps and (q_id in valid_ids):
             doc_ref = db.collection("questions").document(q_id)
-            # merge=True 옵션으로 기존 문제 데이터는 유지하고 해설만 추가
             batch.update(doc_ref, {"solution_steps": steps})
             count += 1
     
@@ -78,13 +86,13 @@ def update_solution_batch(items):
     return count
 
 def generate_ai_solution(question_data):
-    """[복구] 실시간 AI 해설 생성"""
+    """AI 실시간 해설 생성"""
     if not GEMINI_AVAILABLE: return None
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash') # 속도 빠른 모델 추천
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
         당신은 회계학 강사입니다. 다음 문제의 '단계별 해설'을 JSON으로 작성하세요.
-        [문제] {question_data['content_markdown']}
+        [문제] {question_data.get('content_markdown', '')}
         [출력형식 JSON]
         [
           {{"step": 1, "title": "분석", "content": "..."}},
@@ -98,7 +106,6 @@ def generate_ai_solution(question_data):
         st.error(f"AI 호출 오류: {e}")
         return None
 
-# 사채 계산기 로직 (생략 없이 포함)
 def calculate_bond_schedule(face, c_rate, m_rate, periods):
     cash_flow = face * c_rate
     pv_principal = face / ((1 + m_rate) ** periods)
@@ -130,21 +137,18 @@ def calculate_bond_schedule(face, c_rate, m_rate, periods):
 # =========================================================
 st.title("☁️ Accoun-T Cloud")
 
-# [사이드바] 필터링 기능 강화
 with st.sidebar:
     st.header("🔍 학습 필터")
-    
     all_data = get_all_questions()
     
-    # 1. 엔진(주제) 필터
+    # 엔진 필터
     engine_list = sorted(list(set([q.get('engine_type', '기타') for q in all_data])))
     selected_engines = st.multiselect("엔진 선택 (Engine)", engine_list, default=engine_list)
     
-    # 2. 모드 선택
     st.divider()
     menu = st.radio("메뉴 이동", ["학습 모드 (Student)", "관리자 모드 (Admin)"])
     
-    # 필터링 로직
+    # 필터링
     if selected_engines:
         filtered_questions = [q for q in all_data if q.get('engine_type', '기타') in selected_engines]
     else:
@@ -174,67 +178,87 @@ if menu == "학습 모드 (Student)":
     with tab2:
         st.subheader("기출문제 풀이")
         if not filtered_questions:
-            st.warning("선택된 주제의 문제가 없습니다. 사이드바 필터를 확인하세요.")
+            st.warning("선택된 주제의 문제가 없습니다.")
         else:
-            # 문제 선택 (ID + 주제 표시)
-            q_map = {q['question_id']: f"[{q.get('engine_type','-')}] {q['topic']} ({q['question_id']})" for q in filtered_questions}
-            # 정렬: 연도_회차_번호 순으로 정렬하기 위해 ID 기준 정렬
+            # 문제 선택
+            q_map = {}
+            for q in filtered_questions:
+                qid = q.get('question_id', 'unknown')
+                topic = q.get('topic', '제목없음')
+                engine = q.get('engine_type', '-')
+                q_map[qid] = f"[{engine}] {topic} ({qid})"
+            
             sorted_ids = sorted(q_map.keys())
-            
             sel_id = st.selectbox("문제 선택", sorted_ids, format_func=lambda x: q_map[x])
-            q_item = next(q for q in filtered_questions if q['question_id'] == sel_id)
             
-            st.divider()
-            c_q, c_a = st.columns([1.2, 0.8])
+            # 선택된 문제 데이터 가져오기
+            q_item = next((q for q in filtered_questions if q['question_id'] == sel_id), None)
             
-            # [왼쪽] 문제 영역
-            with c_q:
-                st.markdown(f"#### Q. {q_item['topic']}")
-                st.markdown(q_item['content_markdown'])
-                if q_item.get('choices'):
-                    st.write("---")
-                    opts = [f"{k}. {v}" for k, v in sorted(q_item['choices'].items())]
-                    st.radio("정답 선택", opts, label_visibility="collapsed")
-            
-            # [오른쪽] 해설 영역
-            with c_a:
-                st.markdown("#### 💡 AI 튜터")
+            if q_item:
+                st.divider()
+                c_q, c_a = st.columns([1.2, 0.8])
                 
-                # 1. 저장된 해설이 있는 경우
-                if q_item.get('solution_steps'):
-                    with st.expander("해설 보기", expanded=True):
-                        st.success(f"정답: {q_item.get('answer', '?')}번")
-                        for step in q_item['solution_steps']:
-                            st.markdown(f"**Step {step['step']}: {step['title']}**")
-                            st.caption(step['content'])
-                            st.divider()
+                # [좌측] 문제
+                with c_q:
+                    st.markdown(f"#### Q. {q_item.get('topic', '')}")
+                    st.markdown(q_item.get('content_markdown', ''))
+                    
+                    choices = q_item.get('choices')
+                    if choices:
+                        st.write("---")
+                        # choices가 리스트인지 딕셔너리인지 확인하여 처리
+                        if isinstance(choices, dict):
+                            opts = [f"{k}. {v}" for k, v in sorted(choices.items())]
+                        elif isinstance(choices, list):
+                            opts = choices
+                        else:
+                            opts = []
+                        st.radio("정답 선택", opts, label_visibility="collapsed")
                 
-                # 2. 해설이 없으면 -> [실시간 생성 요청] 버튼 표시
-                else:
-                    st.info("아직 등록된 해설이 없습니다.")
-                    if GEMINI_AVAILABLE:
-                        if st.button("🤖 AI에게 지금 풀이 요청하기"):
-                            with st.spinner("AI가 문제를 분석 중입니다..."):
-                                new_sol = generate_ai_solution(q_item)
-                                if new_sol:
-                                    # DB에 저장 (캐싱)
-                                    db.collection("questions").document(sel_id).update({"solution_steps": new_sol})
-                                    st.success("해설이 생성되었습니다! 화면이 새로고침 됩니다.")
-                                    st.rerun()
+                # [우측] 해설
+                with c_a:
+                    st.markdown("#### 💡 AI 튜터")
+                    
+                    # 해설 데이터 확인 (solution_steps 또는 steps)
+                    sol_steps = q_item.get('solution_steps') or q_item.get('steps')
+                    
+                    if sol_steps and isinstance(sol_steps, list):
+                        with st.expander("해설 보기", expanded=True):
+                            st.success(f"정답: {q_item.get('answer', '?')}번")
+                            
+                            for step in sol_steps:
+                                # [수정됨] KeyError 방지를 위해 .get() 사용
+                                if isinstance(step, dict):
+                                    s_step = step.get('step', '-')
+                                    s_title = step.get('title', '')
+                                    s_content = step.get('content', '')
+                                    
+                                    st.markdown(f"**Step {s_step}: {s_title}**")
+                                    st.caption(s_content)
+                                    st.divider()
                     else:
-                        st.caption("⚠️ AI 기능 설정을 위해 API Key가 필요합니다.")
+                        st.info("아직 등록된 해설이 없습니다.")
+                        if GEMINI_AVAILABLE:
+                            if st.button("🤖 AI에게 지금 풀이 요청하기"):
+                                with st.spinner("AI가 분석 중..."):
+                                    new_sol = generate_ai_solution(q_item)
+                                    if new_sol:
+                                        db.collection("questions").document(sel_id).update({"solution_steps": new_sol})
+                                        st.success("해설 생성 완료! 새로고침합니다.")
+                                        st.rerun()
+                        else:
+                            st.caption("AI 기능을 사용하려면 API Key 설정이 필요합니다.")
 
 # ---------------------------------------------------------
 # [B] 관리자 모드
 # ---------------------------------------------------------
 elif menu == "관리자 모드 (Admin)":
     st.header("🛠️ 통합 데이터 관리자")
-    
-    t1, t2, t3 = st.tabs(["📥 문제 일괄 등록", "📝 해설 일괄 등록(NEW)", "🗑️ 데이터 관리"])
+    t1, t2, t3 = st.tabs(["📥 문제 일괄 등록", "📝 해설 일괄 등록", "🗑️ 데이터 관리"])
     
     # 1. 문제 등록
     with t1:
-        st.info("여러 문제의 JSON 리스트를 붙여넣으세요. (ID가 같으면 덮어씁니다)")
+        st.info("문제 JSON 리스트를 붙여넣으세요.")
         q_json = st.text_area("Question JSON", height=200)
         if st.button("문제 업로드"):
             try:
@@ -242,15 +266,12 @@ elif menu == "관리자 모드 (Admin)":
                 if not isinstance(data, list): data = [data]
                 cnt = save_question_batch(data)
                 st.success(f"{cnt}건 업로드 완료!")
-                st.balloons()
             except Exception as e:
                 st.error(f"오류: {e}")
 
-    # 2. 해설 등록 (스마트 매칭)
+    # 2. 해설 등록 (유연함: steps 키도 허용)
     with t2:
-        st.success("✅ 순서 상관 없음! JSON 안에 'question_id'만 있으면 알아서 찾아가서 붙습니다.")
-        st.markdown("**입력 예시:** `[{'question_id': '...', 'solution_steps': [...]}, ...]`")
-        
+        st.success("JSON 안에 'question_id'만 있으면 알아서 찾아가서 붙습니다.")
         s_json = st.text_area("Solution JSON", height=200)
         if st.button("해설 합체 (Merge)"):
             try:
@@ -258,10 +279,10 @@ elif menu == "관리자 모드 (Admin)":
                 if not isinstance(data, list): data = [data]
                 cnt = update_solution_batch(data)
                 if cnt > 0:
-                    st.success(f"총 {cnt}개의 문제에 해설을 연결했습니다!")
+                    st.success(f"총 {cnt}건의 해설 업데이트 완료!")
                     st.rerun()
                 else:
-                    st.warning("일치하는 문제 ID를 찾지 못했습니다.")
+                    st.warning("일치하는 문제 ID가 없거나 데이터 형식이 맞지 않습니다.")
             except Exception as e:
                 st.error(f"오류: {e}")
 
@@ -269,10 +290,13 @@ elif menu == "관리자 모드 (Admin)":
     with t3:
         if all_data:
             df = pd.DataFrame(all_data)
-            st.dataframe(df[['question_id', 'topic', 'engine_type']], use_container_width=True)
+            # 없는 컬럼 에러 방지
+            cols = [c for c in ['question_id', 'topic', 'engine_type'] if c in df.columns]
+            st.dataframe(df[cols], use_container_width=True)
             
-            d_id = st.selectbox("삭제할 ID", df['question_id'])
-            if st.button("영구 삭제"):
-                db.collection("questions").document(d_id).delete()
-                get_all_questions.clear()
-                st.rerun()
+            if 'question_id' in df.columns:
+                d_id = st.selectbox("삭제할 ID", df['question_id'])
+                if st.button("영구 삭제"):
+                    db.collection("questions").document(d_id).delete()
+                    get_all_questions.clear()
+                    st.rerun()
