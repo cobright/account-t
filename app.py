@@ -167,6 +167,17 @@ def save_json_batch(collection_name, items, id_field):
     batch.commit()
     return count
 
+def update_question_solution(question_id, solution_steps):
+    """특정 문제의 해설 필드만 업데이트"""
+    try:
+        db.collection("questions").document(str(question_id)).update({
+            "solution_steps": solution_steps
+        })
+        return True
+    except Exception as e:
+        st.error(f"데이터베이스 저장 실패: {e}")
+        return False
+
 def delete_document(collection_name, doc_id):
     db.collection(collection_name).document(str(doc_id)).delete()
 
@@ -426,8 +437,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                 st.success(f"매출원가: {c:,}"); st.info(f"기말재고: {e:,}")
             else: st.info("이론 중심 챕터입니다.")
 
-        # --- [Tab 3] 기출문제 (기존 유지) ---
-        # --- [Tab 3] 기출문제 (기능 완전 복원) ---
+        # --- [Tab 3] 기출문제 (AI 해설 저장 기능 추가 ✨) ---
         with tab3:
             kws = current_ch.get('related_keywords', [])
             if kws:
@@ -437,7 +447,6 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                 if matched:
                     st.success(f"🔍 조건에 맞는 문제 {len(matched)}개를 찾았습니다.")
                     
-                    # 문제 선택 박스
                     q_opts = {}
                     for q in matched:
                         year = q.get('exam_info', {}).get('year', '-')
@@ -449,13 +458,12 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     
                     st.divider()
                     
-                    # 태그 표시
                     tags = q_data.get('tags', [])
                     if tags: st.caption("Tags: " + " ".join([f"`#{t}`" for t in tags]))
                     
                     c_q, c_a = st.columns([1.5, 1])
                     
-                    # [왼쪽 컬럼] 문제 지문 & 시뮬레이터
+                    # [왼쪽] 문제 및 시뮬레이터
                     with c_q:
                         st.markdown(f"**Q. {q_data['topic']}**")
                         st.markdown(q_data['content_markdown'])
@@ -465,7 +473,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                             if isinstance(opts, dict): opts = [f"{k}. {v}" for k,v in sorted(opts.items())]
                             st.radio("정답", opts, label_visibility="collapsed")
                             
-                        # ⚡️ [복원됨] 문제별 맞춤 시뮬레이터
+                        # 시뮬레이터
                         sim_config = q_data.get('sim_config')
                         if sim_config:
                             st.write("---")
@@ -473,81 +481,90 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                 s_type = sim_config.get('type')
                                 p = sim_config.get('params', {})
                                 
-                                # 1. 사채/리스 (PV)
+                                # (시뮬레이터 로직은 기존과 동일하므로 생략하지 않고 그대로 유지)
                                 if s_type == "bond_basic":
                                     f_val = st.number_input("액면", value=p.get('face', 100000), key=f"s_{qid}_f")
                                     c_val = st.number_input("표시이자", value=p.get('crate', 0.05), format="%.2f", key=f"s_{qid}_c")
                                     m_val = st.number_input("유효이자", value=p.get('mrate', 0.08), format="%.2f", key=f"s_{qid}_m")
-                                    
                                     res_p, res_df = Simulators.bond_basic(f_val, c_val, m_val, p.get('periods', 3))
                                     st.dataframe(res_df, use_container_width=True)
-                                    
-                                # 2. 감가상각 (Allocation)
                                 elif s_type == "depreciation":
                                     c_val = st.number_input("취득원가", value=p.get('cost', 1000), key=f"s_{qid}_cost")
                                     r_val = st.number_input("잔존가치", value=p.get('residual', 0), key=f"s_{qid}_res")
                                     l_val = st.number_input("내용연수", value=p.get('life', 5), key=f"s_{qid}_life")
-                                    rate_val = p.get('rate')
-                                    method_val = p.get('method', 'SL')
-                                    
+                                    rate_val = p.get('rate'); method_val = p.get('method', 'SL')
                                     df = Simulators.depreciation(c_val, r_val, l_val, method_val, rate_val)
                                     st.line_chart(df['기말장부'].str.replace(",","").astype(int))
                                     st.dataframe(df, use_container_width=True)
-                                    
-                                # 3. 재고자산 (Flow)
                                 elif s_type == "inventory_fifo":
                                     bq = p.get('base_qty', 100); bp = p.get('base_price', 100)
                                     buyq = p.get('buy_qty', 100); buyp = p.get('buy_price', 120)
                                     sell_q = st.slider("판매수량 시뮬레이션", 0, bq+buyq, p.get('sell_qty', 150), key=f"s_{qid}_sell")
-                                    
                                     cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sell_q)
-                                    st.success(f"매출원가: {cogs:,}")
-                                    st.info(f"기말재고: {end:,}")
-
-                                # 4. 지분법 (Entity)
+                                    st.success(f"매출원가: {cogs:,}"); st.info(f"기말재고: {end:,}")
                                 elif s_type == "entity_equity":
                                     c_cost = st.number_input("취득원가", value=p.get('cost', 1000000), key=f"s_{qid}_ec")
                                     c_share = st.number_input("지분율", value=p.get('share', 0.2), key=f"s_{qid}_es")
                                     c_ni = st.number_input("순이익", value=p.get('net_income', 0), key=f"s_{qid}_eni")
                                     c_div = st.number_input("배당금", value=p.get('dividends', 0), key=f"s_{qid}_ediv")
-                                    
                                     ebv, edf = Simulators.entity_equity(c_cost, c_share, c_ni, c_div)
-                                    st.metric("기말 장부금액", f"{ebv:,}")
-                                    st.bar_chart(edf.set_index("구분")["금액"])
+                                    st.metric("기말 장부금액", f"{ebv:,}"); st.bar_chart(edf.set_index("구분")["금액"])
 
-                    # [오른쪽 컬럼] 정답 & 해설 & AI 요청
+                    # [오른쪽] 해설 (AI 저장 기능 적용)
                     with c_a:
-                        with st.expander("💡 해설 보기", expanded=True):
+                        # 해설 펼침 상태: 이미 해설이 있으면 펼쳐둠
+                        has_solution = bool(q_data.get('solution_steps') or q_data.get('steps'))
+                        with st.expander("💡 해설 보기", expanded=has_solution):
                             st.info(f"정답: {q_data.get('answer', '?')}")
+                            
                             sols = q_data.get('solution_steps') or q_data.get('steps')
                             
                             if sols:
+                                # 저장된 해설이 있는 경우 바로 표시
                                 for s in sols:
                                     st.markdown(f"**{s.get('title','Step')}**")
                                     st.caption(s.get('content',''))
                                     st.divider()
                             else:
                                 st.warning("등록된 해설이 없습니다.")
-                                # ⚡️ [복원됨] AI 해설 요청 버튼
+                                
+                                # AI 해설 요청 버튼
                                 if GEMINI_AVAILABLE:
-                                    if st.button("🤖 AI 해설 요청하기", key=f"ai_btn_{qid}"):
-                                        with st.spinner("AI 선생님이 해설을 작성 중입니다..."):
-                                            # 실제 Gemini 호출 로직 (간소화된 예시)
-                                            # 실제로는 model.generate_content() 등을 호출해야 함
-                                            prompt = f"문제: {q_data['content_markdown']}\n이 문제에 대한 상세한 단계별 해설을 작성해줘."
+                                    if st.button("🤖 AI 해설 요청 및 저장", key=f"ai_btn_{qid}"):
+                                        with st.spinner("AI가 해설을 작성하고 DB에 저장 중입니다..."):
                                             try:
-                                                model = genai.GenerativeModel("gemini-2.5-flash")
+                                                model = genai.GenerativeModel("gemini-pro")
+                                                # 구조화된 답변을 유도하는 프롬프트
+                                                prompt = f"""
+                                                문제: {q_data['content_markdown']}
+                                                위 문제에 대해 초심자도 이해하기 쉬운 단계별 해설을 작성해줘.
+                                                형식은 자유롭게 하되, 마크다운을 적절히 사용해.
+                                                """
                                                 response = model.generate_content(prompt)
-                                                st.markdown("### 🤖 AI 해설")
-                                                st.markdown(response.text)
+                                                ai_text = response.text
+                                                
+                                                # DB에 저장할 포맷으로 변환
+                                                new_solution = [
+                                                    {
+                                                        "title": "🤖 AI 선생님의 해설", 
+                                                        "content": ai_text
+                                                    }
+                                                ]
+                                                
+                                                # Firestore 저장
+                                                if update_question_solution(qid, new_solution):
+                                                    st.success("해설이 저장되었습니다! 새로고침합니다.")
+                                                    load_questions.clear() # 캐시 초기화 (중요)
+                                                    st.rerun() # 화면 새로고침하여 해설 표시
+                                                
                                             except Exception as e:
-                                                st.error(f"AI 호출 실패: {e}")
+                                                st.error(f"오류 발생: {e}")
                                 else:
-                                    st.caption("AI 해설 기능을 사용하려면 API 키 설정이 필요합니다.")
+                                    st.caption("AI 기능을 사용하려면 API 키가 필요합니다.")
                 else:
                     st.warning("조건에 맞는 문제가 없습니다.")
             else:
-                st.info("이 챕터에는 연결된 태그(Keywords)가 없습니다.")
+                st.info("이 챕터에는 연결된 태그가 없습니다.")
 
 # ---------------------------------------------------------
 # [B] 관리자 모드 (Admin)
