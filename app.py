@@ -124,33 +124,26 @@ def load_questions():
 
 def advanced_filter_questions(all_qs, filters):
     """
-    고급 필터링 로직
-    filters = {
-        'keywords': [], 
-        'years': (min, max), 
-        'exams': [], 
-        'difficulty': (min, max)
-    }
+    고급 필터링 로직 (Type Safe Version)
     """
     filtered = []
     
     for q in all_qs:
-        # 1. 키워드 매칭 (기존 로직 유지)
+        # 1. 키워드 매칭
         if filters.get('keywords'):
             search_text = (q.get('topic', '') + q.get('content_markdown', '')).lower()
-            # 태그도 검색 대상에 포함
             tags = q.get('tags', [])
             if isinstance(tags, list): search_text += " ".join(tags).lower()
             
             if not any(k.lower() in search_text for k in filters['keywords']):
                 continue
 
-        # 2. 연도 필터 (Year Range)
-        q_year = q.get('exam_info', {}).get('year', 0)
-        # 데이터가 없거나 문자인 경우 0으로 처리
-        try: q_year = int(q_year)
-        except: q_year = 0
-        
+        # 2. 연도 필터 (Year Range) - 안전한 정수 변환
+        try:
+            q_year = int(q.get('exam_info', {}).get('year', 0))
+        except (ValueError, TypeError):
+            q_year = 0
+            
         if filters.get('years'):
             min_y, max_y = filters['years']
             if q_year != 0 and not (min_y <= q_year <= max_y):
@@ -162,10 +155,16 @@ def advanced_filter_questions(all_qs, filters):
             if q_exam not in filters['exams']:
                 continue
                 
-        # 4. 난이도 필터
-        q_diff = q.get('difficulty', 0)
+        # 4. 난이도 필터 - [🚨 핵심 수정 부분]
+        # 데이터가 문자열("3")이어도 숫자로 강제 변환, 에러나면 0 처리
+        try:
+            q_diff = int(q.get('difficulty', 0))
+        except (ValueError, TypeError):
+            q_diff = 0
+            
         if filters.get('difficulty'):
             min_d, max_d = filters['difficulty']
+            # 난이도 정보가 없거나(0), 범위 밖이면 제외
             if q_diff != 0 and not (min_d <= q_diff <= max_d):
                 continue
 
