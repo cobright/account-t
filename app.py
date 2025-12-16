@@ -422,46 +422,73 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                 delete_document("courses", selected[0]['course_id'])
                 st.success("삭제 완료"); load_courses.clear(); st.rerun()
 
-    # 2. 문제/해설 통합 (시뮬레이터 설정 필드 고려)
+    # 2. 문제/해설 통합 (복수 선택 & 일괄 삭제 적용)
     with tab_quest:
-        st.markdown("#### 2️⃣ 등록된 문제 목록")
+        st.markdown("#### 2️⃣ 등록된 문제 목록 (필터링 강화)")
+        
         if all_questions_raw:
             df_q = pd.DataFrame(all_questions_raw)
+            
+            # --- 방어 로직 ---
             if 'exam_info' not in df_q.columns: df_q['exam_info'] = None
             if 'tags' not in df_q.columns: df_q['tags'] = None
             if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
             if 'topic' not in df_q.columns: df_q['topic'] = '제목 없음'
+            if 'sim_config' not in df_q.columns: df_q['sim_config'] = None
             
+            # --- Grid용 데이터 가공 ---
             df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
             df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
             df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
             df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
-            # 시뮬레이터 유무 표시
             df_q['has_sim'] = df_q.apply(lambda r: "⚡" if r.get('sim_config') else "-", axis=1)
             
             df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol', 'has_sim']].copy()
             
+            # AgGrid 설정
             gb_q = GridOptionsBuilder.from_dataframe(df_grid)
-            gb_q.configure_selection('single', use_checkbox=True)
+            # [수정 1] 복수 선택 허용 ('multiple')
+            gb_q.configure_selection('multiple', use_checkbox=True)
             gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
+            
             gb_q.configure_column("question_id", width=100, pinned=True)
             gb_q.configure_column("topic", width=250)
             gb_q.configure_column("has_sim", header_name="Sim", width=50, cellStyle={'textAlign': 'center'})
             
             gridOpts_q = gb_q.build()
-            grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350)
+            
+            # [수정 2] key 추가 (탭 튕김 방지)
+            grid_resp_q = AgGrid(
+                df_grid, 
+                gridOptions=gridOpts_q, 
+                update_mode=GridUpdateMode.SELECTION_CHANGED, 
+                fit_columns_on_grid_load=True, 
+                height=350,
+                key='admin_q_grid'  # 이 키가 있어야 탭이 유지됩니다!
+            )
+            
             sel_q = grid_resp_q['selected_rows']
             if isinstance(sel_q, pd.DataFrame): sel_q = sel_q.to_dict('records')
         else:
-            st.info("문제가 없습니다."); sel_q = []
+            st.info("등록된 문제가 없습니다.")
+            sel_q = []
             
         st.divider()
+        
         target_q_data = {}
         header_text_q = "🆕 신규 문제 등록"
+        
+        # [수정 3] 선택된 항목 처리 로직 개선
         if sel_q:
-            sel_id = sel_q[0]['question_id']
-            target_q_data = next((q for q in all_questions_raw if q['question_id'] == sel_id), {})
-            header_text_q = f"✏️ 수정 모드: {sel_id}"
+            count = len(sel_q)
+            # 복수 선택 시 첫 번째 아이템을 에디터에 표시 (수정/복제 용도)
+            last_sel_id = sel_q[0]['question_id'] 
+            target_q_data = next((q for q in all_questions_raw if q['question_id'] == last_sel_id), {})
+            
+            if count == 1:
+                header_text_q = f"✏️ 수정 모드: {last_sel_id}"
+            else:
+                header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
             
         st.subheader(header_text_q)
         default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
@@ -469,14 +496,24 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         
         qc1, qc2 = st.columns([1, 5])
         with qc1:
+            # 저장 버튼 (기존과 동일)
             if st.button("💾 문제 저장"):
                 try:
                     data = json.loads(q_json)
                     if not isinstance(data, list): data = [data]
-                    save_json_batch("questions", data, "question_id")
-                    st.success("저장 완료"); load_questions.clear(); st.rerun()
+                    cnt = save_json_batch("questions", data, "question_id")
+                    st.success(f"{cnt}건 저장 완료")
+                    load_questions.clear()
+                    st.rerun()
                 except Exception as e: st.error(e)
         with qc2:
-            if sel_q and st.button("🗑️ 문제 삭제"):
-                delete_document("questions", sel_q[0]['question_id'])
-                st.success("삭제 완료"); load_questions.clear(); st.rerun()
+            # [수정 4] 일괄 삭제 버튼
+            if sel_q:
+                if st.button(f"🗑️ 선택된 {len(sel_q)}개 문제 삭제"):
+                    deleted_count = 0
+                    for row in sel_q:
+                        delete_document("questions", row['question_id'])
+                        deleted_count += 1
+                    st.success(f"{deleted_count}개 삭제 완료")
+                    load_questions.clear()
+                    st.rerun()
