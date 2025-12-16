@@ -62,7 +62,16 @@ class Simulators:
                 "유효이자": f"{int(ie):,}", "표시이자": f"{int(cp):,}",
                 "상각액": f"{int(am):,}", "장부금액": f"{int(book_value):,}"
             })
-        return int(price), pd.DataFrame(data).set_index("기간")
+            
+        # [Insight 생성]
+        diff_type = "할인" if mrate > crate else ("할증" if mrate < crate else "액면")
+        insight = f"""
+        **📊 분석 리포트**
+        1. **발행 형태**: 시장이자율({mrate*100}%)이 표시이자율({crate*100}%)보다 {('높아' if mrate > crate else '낮아')} **{diff_type}발행**되었습니다.
+        2. **장부금액 추세**: 만기({periods}년)로 갈수록 장부금액이 **{int(price):,}원**에서 **{int(face):,}원**을 향해 {('증가' if diff_type=='할인' else '감소')}합니다.
+        3. **총 이자비용**: {periods}년 간 인식할 총 이자비용은 **{int(periods * cash_flow + (face - price) if diff_type == '할인' else periods * cash_flow - (price - face)):,}원**입니다.
+        """
+        return int(price), pd.DataFrame(data).set_index("기간"), insight
 
     @staticmethod
     def depreciation(cost, residual, life, method, rate=None):
@@ -87,34 +96,67 @@ class Simulators:
                 "연도": t, "기초장부": f"{int(start_bv):,}",
                 "상각비": f"{int(dep_expense):,}", "기말장부": f"{int(book_value):,}"
             })
-        return pd.DataFrame(data).set_index("연도")
+            
+        # [Insight 생성]
+        method_map = {"SL": "정액법", "DB": "정률법", "SYD": "연수합계법"}
+        trend = "매년 일정합니다" if method == "SL" else "초기에 크고 점차 감소합니다 (가속상각)"
+        insight = f"""
+        **📊 분석 리포트**
+        1. **상각 방법**: **{method_map.get(method, method)}**을 적용했습니다.
+        2. **비용 추세**: 감가상각비가 **{trend}**.
+        3. **최종 잔액**: {life}년 후 장부금액(**{int(book_value):,}원**)은 잔존가치(**{int(residual):,}원**)와 정확히 일치합니다.
+        """
+        return pd.DataFrame(data).set_index("연도"), insight
 
     @staticmethod
     def inventory_fifo(base_qty, base_price, buy_qty, buy_price, sell_qty):
         cogs = 0
         rem_base = base_qty
         rem_buy = buy_qty
+        
         sold_from_base = min(sell_qty, rem_base)
         cogs += sold_from_base * base_price
         rem_base -= sold_from_base
+        
         sold_from_buy = min(sell_qty - sold_from_base, rem_buy)
         cogs += sold_from_buy * buy_price
         rem_buy -= sold_from_buy
+        
         ending = (rem_base * base_price) + (rem_buy * buy_price)
-        return cogs, ending, rem_base, rem_buy
+        
+        # [Insight 생성]
+        price_trend = "상승" if buy_price > base_price else "하락"
+        profit_effect = "과대계상(이익 ↑)" if price_trend == "상승" else "과소계상(이익 ↓)"
+        insight = f"""
+        **📊 분석 리포트 (FIFO 가정)**
+        1. **물가 추세**: 단가가 {base_price}원에서 {buy_price}원으로 **{price_trend}**했습니다.
+        2. **손익 효과**: 선입선출법은 옛날 싼 재고를 먼저 비용(원가) 처리하므로, 현재 시점에는 이익이 **{profit_effect}**되는 경향이 있습니다.
+        3. **재고 상태**: 기말재고({int(ending):,}원)는 가장 **최근에 구입한 단가**로 구성되어 현행가치에 가깝습니다.
+        """
+        return cogs, ending, rem_base, rem_buy, insight
 
     @staticmethod
     def entity_equity(cost, share_rate, net_income, dividends):
         equity_income = net_income * share_rate
         div_received = dividends * share_rate
         ending_bv = cost + equity_income - div_received
+        
         data = [
             {"구분": "1. 기초 취득원가", "금액": cost, "효과": "자산(+)"},
             {"구분": "2. 지분법이익(NI)", "금액": equity_income, "효과": "자산 증가(↑)"},
             {"구분": "3. 배당금수령(Div)", "금액": div_received, "효과": "자산 감소(↓)"},
             {"구분": "4. 기말 장부금액", "금액": ending_bv, "효과": "최종 잔액"}
         ]
-        return int(ending_bv), pd.DataFrame(data)
+        
+        # [Insight 생성]
+        insight = f"""
+        **📊 분석 리포트**
+        1. **성장의 공유**: 피투자회사가 번 돈({int(net_income):,}) 중 내 몫(**{int(equity_income):,}**)만큼 내 자산도 늘어났습니다.
+        2. **배당의 의미**: 배당금(**{int(div_received):,}**)은 수익이 아니라, 투자했던 돈을 일부 **회수(자산 감소)**한 것으로 처리됩니다.
+        3. **최종 결과**: 기초보다 장부금액이 **{int(ending_bv - cost):,}원** 변동했습니다.
+        """
+        return int(ending_bv), pd.DataFrame(data), insight
+    
 
 # =========================================================
 # 3. Data Logic & Dan-gwon-hwa (Note Manager) ✨
@@ -390,52 +432,65 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                 NoteManager.save_user_notes(USER_ID, cid, chid, blocks)
                 st.rerun()
 
-        # --- [Tab 2] 시뮬레이터 (기존 유지) ---
+        # --- [Tab 2] 시뮬레이터 (Insight 추가 적용) ---
         with tab2:
             sim_type = current_ch.get('simulator_type', 'default')
             defaults = current_ch.get('simulator_defaults', {})
-            # (시뮬레이터 로직 생략 - v7.0과 동일)
-            # ... (Simulators class methods call) ...
+            
             if "bond" in sim_type:
                 c1, c2 = st.columns([1,2])
                 with c1:
-                    f = st.number_input("액면", defaults.get('face', 100000))
-                    c = st.number_input("표시율", defaults.get('crate',0.05))
-                    m = st.number_input("시장율", defaults.get('mrate',0.08))
+                    f = st.number_input("액면", value=defaults.get('face', 100000))
+                    c = st.number_input("표시율", value=defaults.get('crate',0.05))
+                    m = st.number_input("시장율", value=defaults.get('mrate',0.08))
                     p = st.slider("기간", 1, 10, 3)
                 with c2:
-                    pv, df = Simulators.bond_basic(f, c, m, p)
-                    st.metric("PV", f"{pv:,}"); st.dataframe(df)
+                    # [수정] 리턴값 3개 받음 (pv, df, insight)
+                    pv, df, insight = Simulators.bond_basic(f, c, m, p)
+                    st.metric("PV", f"{pv:,}")
+                    st.dataframe(df, use_container_width=True)
+                    st.info(insight) # [추가] 해석 출력
+
             elif "entity_equity" in sim_type:
                 c1, c2 = st.columns([1,1.5])
                 with c1:
-                    cost = st.number_input("원가", defaults.get('cost',1000))
-                    shr = st.number_input("지분", defaults.get('share',0.2))
-                    ni = st.number_input("순이익", defaults.get('net_income',0))
-                    dv = st.number_input("배당", defaults.get('dividends',0))
+                    cost = st.number_input("원가", value=defaults.get('cost',1000))
+                    shr = st.number_input("지분", value=defaults.get('share',0.2))
+                    ni = st.number_input("순이익", value=defaults.get('net_income',0))
+                    dv = st.number_input("배당", value=defaults.get('dividends',0))
                 with c2:
-                    v, df = Simulators.entity_equity(cost, shr, ni, dv)
-                    st.metric("기말장부", f"{v:,}"); st.bar_chart(df.set_index("구분")["금액"])
+                    v, df, insight = Simulators.entity_equity(cost, shr, ni, dv)
+                    st.metric("기말장부", f"{v:,}")
+                    st.bar_chart(df.set_index("구분")["금액"])
+                    st.info(insight)
+
             elif "depreciation" in sim_type:
                 c1, c2 = st.columns([1,2])
                 with c1:
-                    cost = st.number_input("원가", defaults.get('cost', 1000))
-                    res = st.number_input("잔존", defaults.get('residual', 100))
-                    life = st.number_input("내용연수", defaults.get('life', 5))
+                    cost = st.number_input("원가", value=defaults.get('cost', 1000))
+                    res = st.number_input("잔존", value=defaults.get('residual', 100))
+                    life = st.number_input("내용연수", value=defaults.get('life', 5))
                     rate = None
-                    if "db" in sim_type: rate = st.number_input("상각률", defaults.get('rate', 0.451))
+                    if "db" in sim_type: rate = st.number_input("상각률", value=defaults.get('rate', 0.451))
                     mtd = "DB" if "db" in sim_type else ("SYD" if "syd" in sim_type else "SL")
                 with c2:
-                    df = Simulators.depreciation(cost, res, life, mtd, rate)
-                    st.line_chart(df['기말장부'].str.replace(",","").astype(int)); st.dataframe(df)
+                    df, insight = Simulators.depreciation(cost, res, life, mtd, rate)
+                    st.line_chart(df['기말장부'].str.replace(",","").astype(int))
+                    st.dataframe(df, use_container_width=True)
+                    st.info(insight)
+
             elif "inventory" in sim_type:
                 c1, c2 = st.columns(2)
                 with c1: bq = st.number_input("기초Q", 100); bp = st.number_input("기초P", 100)
                 with c2: buyq = st.number_input("매입Q", 100); buyp = st.number_input("매입P", 120)
                 sq = st.slider("판매Q", 0, bq+buyq, 150)
-                c, e, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sq)
-                st.success(f"매출원가: {c:,}"); st.info(f"기말재고: {e:,}")
-            else: st.info("이론 중심 챕터입니다.")
+                c, e, r1, r2, insight = Simulators.inventory_fifo(bq, bp, buyq, buyp, sq)
+                st.success(f"매출원가: {c:,}")
+                st.info(f"기말재고: {e:,}")
+                st.markdown(insight)
+
+            else: 
+                st.info("이론 중심 챕터입니다.")
 
         # --- [Tab 3] 기출문제 (AI 해설 저장 기능 추가 ✨) ---
         with tab3:
@@ -481,34 +536,52 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                 s_type = sim_config.get('type')
                                 p = sim_config.get('params', {})
                                 
-                                # (시뮬레이터 로직은 기존과 동일하므로 생략하지 않고 그대로 유지)
+                                # 1. Bond
                                 if s_type == "bond_basic":
                                     f_val = st.number_input("액면", value=p.get('face', 100000), key=f"s_{qid}_f")
                                     c_val = st.number_input("표시이자", value=p.get('crate', 0.05), format="%.2f", key=f"s_{qid}_c")
                                     m_val = st.number_input("유효이자", value=p.get('mrate', 0.08), format="%.2f", key=f"s_{qid}_m")
-                                    res_p, res_df = Simulators.bond_basic(f_val, c_val, m_val, p.get('periods', 3))
+                                    
+                                    # [수정] insight unpack & display
+                                    res_p, res_df, insight = Simulators.bond_basic(f_val, c_val, m_val, p.get('periods', 3))
                                     st.dataframe(res_df, use_container_width=True)
+                                    st.info(insight)
+                                    
+                                # 2. Depreciation
                                 elif s_type == "depreciation":
                                     c_val = st.number_input("취득원가", value=p.get('cost', 1000), key=f"s_{qid}_cost")
                                     r_val = st.number_input("잔존가치", value=p.get('residual', 0), key=f"s_{qid}_res")
                                     l_val = st.number_input("내용연수", value=p.get('life', 5), key=f"s_{qid}_life")
-                                    rate_val = p.get('rate'); method_val = p.get('method', 'SL')
-                                    df = Simulators.depreciation(c_val, r_val, l_val, method_val, rate_val)
+                                    rate_val = p.get('rate')
+                                    method_val = p.get('method', 'SL')
+                                    
+                                    df, insight = Simulators.depreciation(c_val, r_val, l_val, method_val, rate_val)
                                     st.line_chart(df['기말장부'].str.replace(",","").astype(int))
                                     st.dataframe(df, use_container_width=True)
+                                    st.info(insight)
+                                    
+                                # 3. Inventory
                                 elif s_type == "inventory_fifo":
                                     bq = p.get('base_qty', 100); bp = p.get('base_price', 100)
                                     buyq = p.get('buy_qty', 100); buyp = p.get('buy_price', 120)
                                     sell_q = st.slider("판매수량 시뮬레이션", 0, bq+buyq, p.get('sell_qty', 150), key=f"s_{qid}_sell")
-                                    cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sell_q)
-                                    st.success(f"매출원가: {cogs:,}"); st.info(f"기말재고: {end:,}")
+                                    
+                                    cogs, end, r1, r2, insight = Simulators.inventory_fifo(bq, bp, buyq, buyp, sell_q)
+                                    st.success(f"매출원가: {cogs:,}")
+                                    st.info(f"기말재고: {end:,}")
+                                    st.caption(insight)
+
+                                # 4. Entity
                                 elif s_type == "entity_equity":
                                     c_cost = st.number_input("취득원가", value=p.get('cost', 1000000), key=f"s_{qid}_ec")
                                     c_share = st.number_input("지분율", value=p.get('share', 0.2), key=f"s_{qid}_es")
                                     c_ni = st.number_input("순이익", value=p.get('net_income', 0), key=f"s_{qid}_eni")
                                     c_div = st.number_input("배당금", value=p.get('dividends', 0), key=f"s_{qid}_ediv")
-                                    ebv, edf = Simulators.entity_equity(c_cost, c_share, c_ni, c_div)
-                                    st.metric("기말 장부금액", f"{ebv:,}"); st.bar_chart(edf.set_index("구분")["금액"])
+                                    
+                                    ebv, edf, insight = Simulators.entity_equity(c_cost, c_share, c_ni, c_div)
+                                    st.metric("기말 장부금액", f"{ebv:,}")
+                                    st.bar_chart(edf.set_index("구분")["금액"])
+                                    st.info(insight)
 
                     # [오른쪽] 해설 (AI 저장 기능 적용)
                     with c_a:
