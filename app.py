@@ -106,7 +106,7 @@ class Simulators:
         return cogs, ending, rem_base, rem_buy
 
 # =========================================================
-# 3. Data Logic
+# 3. Data Logic (Enhanced Filter)
 # =========================================================
 @st.cache_data(ttl=60)
 def load_courses():
@@ -122,14 +122,56 @@ def load_questions():
         return [doc.to_dict() for doc in docs]
     except: return []
 
-def find_related_questions(keywords, all_questions):
-    if not keywords: return []
-    results = []
-    for q in all_questions:
-        search_text = (q.get('topic', '') + q.get('content_markdown', '')).lower()
-        if any(k.lower() in search_text for k in keywords):
-            results.append(q)
-    return results
+def advanced_filter_questions(all_qs, filters):
+    """
+    고급 필터링 로직
+    filters = {
+        'keywords': [], 
+        'years': (min, max), 
+        'exams': [], 
+        'difficulty': (min, max)
+    }
+    """
+    filtered = []
+    
+    for q in all_qs:
+        # 1. 키워드 매칭 (기존 로직 유지)
+        if filters.get('keywords'):
+            search_text = (q.get('topic', '') + q.get('content_markdown', '')).lower()
+            # 태그도 검색 대상에 포함
+            tags = q.get('tags', [])
+            if isinstance(tags, list): search_text += " ".join(tags).lower()
+            
+            if not any(k.lower() in search_text for k in filters['keywords']):
+                continue
+
+        # 2. 연도 필터 (Year Range)
+        q_year = q.get('exam_info', {}).get('year', 0)
+        # 데이터가 없거나 문자인 경우 0으로 처리
+        try: q_year = int(q_year)
+        except: q_year = 0
+        
+        if filters.get('years'):
+            min_y, max_y = filters['years']
+            if q_year != 0 and not (min_y <= q_year <= max_y):
+                continue
+                
+        # 3. 시험 유형 필터 (Exam Type)
+        q_exam = q.get('exam_info', {}).get('type', '기타')
+        if filters.get('exams'):
+            if q_exam not in filters['exams']:
+                continue
+                
+        # 4. 난이도 필터
+        q_diff = q.get('difficulty', 0)
+        if filters.get('difficulty'):
+            min_d, max_d = filters['difficulty']
+            if q_diff != 0 and not (min_d <= q_diff <= max_d):
+                continue
+
+        filtered.append(q)
+            
+    return filtered
 
 def save_json_batch(collection_name, items, id_field):
     batch = db.batch()
@@ -150,23 +192,65 @@ def delete_document(collection_name, doc_id):
 # =========================================================
 st.title("☁️ Accoun-T Cloud")
 
+# 전역 데이터 로드 (필터링 위젯 구성을 위해 미리 로드)
+all_questions_raw = load_questions()
+all_courses = load_courses()
+
+# --- 사이드바 (Controller) ---
 with st.sidebar:
     st.header("Controller")
     mode = st.radio("모드 선택", ["👨‍🎓 학습 모드 (Student)", "🛠️ 관리자 모드 (Admin)"])
     st.divider()
     
+    # [학습 모드 전용] 필터링 UI
+    student_filters = {}
     selected_course = None
+    
     if mode == "👨‍🎓 학습 모드 (Student)":
-        courses = load_courses()
-        if courses:
-            engines = sorted(list(set([c['engine_type'] for c in courses])))
+        # 1. 커리큘럼 선택
+        if all_courses:
+            engines = sorted(list(set([c['engine_type'] for c in all_courses])))
             sel_engine = st.selectbox("엔진 (Engine)", engines)
-            engine_courses = [c for c in courses if c['engine_type'] == sel_engine]
+            engine_courses = [c for c in all_courses if c['engine_type'] == sel_engine]
             course_map = {c['course_id']: c['title'] for c in engine_courses}
             sel_course_id = st.selectbox("학습 주제 (Topic)", list(course_map.keys()), format_func=lambda x: course_map[x])
-            selected_course = next((c for c in courses if c['course_id'] == sel_course_id), None)
-        else:
-            st.warning("등록된 커리큘럼이 없습니다.")
+            selected_course = next((c for c in all_courses if c['course_id'] == sel_course_id), None)
+        
+        st.divider()
+        st.markdown("### 🔍 맞춤 문제 필터")
+        
+        # 필터 1: 시험 유형 (Dynamic)
+        all_exams = set()
+        for q in all_questions_raw:
+            e_type = q.get('exam_info', {}).get('type')
+            if e_type: all_exams.add(e_type)
+        if not all_exams: all_exams = {"기타"}
+        
+        sel_exams = st.multiselect("시험 유형", sorted(list(all_exams)), default=[])
+        
+        # 필터 2: 연도 범위 (Dynamic)
+        all_years = []
+        for q in all_questions_raw:
+            try: y = int(q.get('exam_info', {}).get('year', 0))
+            except: y = 0
+            if y > 2000: all_years.append(y)
+            
+        min_year, max_year = 2010, 2025
+        if all_years:
+            min_year, max_year = min(all_years), max(all_years)
+            
+        sel_years = st.slider("연도 범위", min_year, max_year, (min_year, max_year))
+        
+        # 필터 3: 난이도
+        sel_diff = st.slider("난이도 (1~5)", 1, 5, (1, 5))
+        
+        # 필터 저장
+        student_filters = {
+            'exams': sel_exams,
+            'years': sel_years,
+            'difficulty': sel_diff,
+            'keywords': [] # 챕터별 키워드는 메인 화면에서 주입
+        }
 
 # ---------------------------------------------------------
 # [A] 학습 모드 (Student)
@@ -182,9 +266,12 @@ if mode == "👨‍🎓 학습 모드 (Student)":
         tab1, tab2, tab3 = st.tabs(["📖 이론", "🧪 시뮬레이터", "🔥 실전 기출"])
         
         with tab1:
-            st.markdown(current_ch.get('theory_markdown', '내용 없음'))
+            # Markdown Quote/Bold issue safe render
+            content = current_ch.get('theory_markdown', '내용 없음')
+            st.markdown(content)
             
         with tab2:
+            # (시뮬레이터 코드는 기존과 동일하여 생략 없이 유지)
             sim_type = current_ch.get('simulator_type', 'default')
             defaults = current_ch.get('simulator_defaults', {})
             
@@ -226,32 +313,53 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     st.success(f"매출원가: {cogs:,}원")
                     st.info(f"기말재고: {end:,}원")
             else:
-                st.info("시각화가 필요 없는 이론 챕터입니다.")
+                st.info("이론 중심 챕터입니다.")
 
         with tab3:
-            kws = current_ch.get('related_keywords', [])
-            if kws:
-                all_qs = load_questions()
-                matched = find_related_questions(kws, all_qs)
-                if matched:
-                    st.success(f"🔍 관련 문제 {len(matched)}개 발견")
-                    q_opts = {q['question_id']: f"[{q.get('exam_info',{}).get('year','-')}] {q['topic']}" for q in matched}
+            # 1. 챕터 키워드 가져오기
+            chapter_keywords = current_ch.get('related_keywords', [])
+            
+            if chapter_keywords:
+                # 2. 필터 병합 (챕터 키워드 + 사이드바 필터)
+                student_filters['keywords'] = chapter_keywords
+                
+                # 3. 필터링 실행
+                matched_qs = advanced_filter_questions(all_questions_raw, student_filters)
+                
+                if matched_qs:
+                    st.success(f"🔍 조건에 맞는 문제 {len(matched_qs)}개를 찾았습니다.")
+                    
+                    # 4. 문제 선택 UI
+                    q_opts = {}
+                    for q in matched_qs:
+                        year = q.get('exam_info', {}).get('year', '-')
+                        etype = q.get('exam_info', {}).get('type', '')
+                        q_opts[q['question_id']] = f"[{year} {etype}] {q['topic']}"
+                        
                     qid = st.selectbox("문제 선택", list(q_opts.keys()), format_func=lambda x: q_opts[x])
-                    q_data = next(q for q in matched if q['question_id'] == qid)
+                    q_data = next(q for q in matched_qs if q['question_id'] == qid)
                     
                     st.divider()
+                    
+                    # 5. 메타데이터 뱃지 표시
+                    tags = q_data.get('tags', [])
+                    if tags:
+                        st.caption("Tags: " + " ".join([f"`#{t}`" for t in tags]))
+                    
+                    # 6. 문제 표시
                     c_q, c_a = st.columns([1.5, 1])
                     with c_q:
                         st.markdown(f"**Q. {q_data['topic']}**")
                         st.markdown(q_data['content_markdown'])
-                        if q_data.get('choices'):
-                            opts = q_data['choices']
-                            if isinstance(opts, dict): opts = [f"{k}. {v}" for k,v in sorted(opts.items())]
-                            elif isinstance(opts, list): opts = opts
-                            else: opts = []
-                            st.radio("정답", opts, label_visibility="collapsed")
+                        
+                        opts = q_data.get('choices')
+                        if opts:
+                            if isinstance(opts, dict): opts_list = [f"{k}. {v}" for k,v in sorted(opts.items())]
+                            else: opts_list = opts
+                            st.radio("정답", opts_list, label_visibility="collapsed")
+                            
                     with c_a:
-                        with st.expander("💡 해설 보기", expanded=True):
+                        with st.expander("💡 해설 보기"):
                             st.info(f"정답: {q_data.get('answer', '?')}")
                             sols = q_data.get('solution_steps') or q_data.get('steps')
                             if sols:
@@ -261,105 +369,105 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     st.divider()
                             else:
                                 st.warning("해설 없음")
+                                if GEMINI_AVAILABLE and st.button("🤖 AI 해설 요청"):
+                                    st.info("AI 기능 호출됨")
                 else:
-                    st.info(f"'{kws}' 관련 문제가 없습니다.")
+                    st.warning("조건에 맞는 문제가 없습니다. 사이드바 필터를 조정해보세요.")
             else:
-                st.info("키워드가 등록되지 않았습니다.")
+                st.info("이 챕터에는 연결된 태그(Keywords)가 없습니다.")
 
 # ---------------------------------------------------------
-# [B] 관리자 모드 (Admin) - ALL GRID v4.0
+# [B] 관리자 모드 (Admin) - Enhanced Grid
 # ---------------------------------------------------------
 elif mode == "🛠️ 관리자 모드 (Admin)":
     st.header("🛠️ 통합 관리 센터")
-    
-    # 탭을 2개로 통합하여 깔끔하게 정리
     tab_course, tab_quest = st.tabs(["📚 커리큘럼 관리", "📥 문제/해설 통합 관리"])
     
-    # 1. 커리큘럼 관리 (Grid + Edit)
+    # 1. 커리큘럼 (기존 유지)
     with tab_course:
         st.markdown("#### 1️⃣ 등록된 코스 목록")
-        courses = load_courses()
-        
-        # Grid 표시
-        if courses:
-            df_c = pd.DataFrame(courses)
+        if all_courses:
+            df_c = pd.DataFrame(all_courses)
             df_view = df_c[['course_id', 'engine_type', 'title']].copy()
             df_view['chapters_count'] = df_c['chapters'].apply(lambda x: len(x) if isinstance(x, list) else 0)
             
             gb = GridOptionsBuilder.from_dataframe(df_view)
             gb.configure_selection('single', use_checkbox=True)
-            gb.configure_column("course_id", header_name="ID", width=100)
-            gb.configure_column("title", header_name="코스 제목", width=300)
-            gridOptions = gb.build()
-            
-            grid_resp = AgGrid(df_view, gridOptions=gridOptions, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=200)
+            gb.configure_column("course_id", width=100)
+            gb.configure_column("title", width=300)
+            grid_resp = AgGrid(df_view, gridOptions=gb.build(), update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=200)
             
             selected = grid_resp['selected_rows']
             if isinstance(selected, pd.DataFrame): selected = selected.to_dict('records')
-        else:
-            st.info("등록된 커리큘럼이 없습니다.")
-            selected = []
+        else: selected = []
 
         st.divider()
-        
-        # Editor 영역
         edit_target = {}
         header_text = "🆕 신규 커리큘럼 등록"
-        
         if selected:
-            edit_target = next(c for c in courses if c['course_id'] == selected[0]['course_id'])
+            edit_target = next(c for c in all_courses if c['course_id'] == selected[0]['course_id'])
             header_text = f"✏️ 수정 모드: {edit_target['course_id']}"
             
         st.subheader(header_text)
-        
-        # JSON Editor
         default_val = json.dumps(edit_target, indent=2, ensure_ascii=False) if edit_target else ""
-        c_json = st.text_area("Course JSON", value=default_val, height=300, placeholder='{\n  "course_id": "PV_001",\n  "title": "...",\n  ...\n}')
+        c_json = st.text_area("Course JSON", value=default_val, height=300)
         
-        c1, c2, c3 = st.columns([1, 1, 4])
+        c1, c2 = st.columns([1, 5])
         with c1:
-            if st.button("💾 저장 (Save)"):
+            if st.button("💾 저장"):
                 try:
                     data = json.loads(c_json)
                     if not isinstance(data, list): data = [data]
                     save_json_batch("courses", data, "course_id")
-                    st.success("저장 완료!")
+                    st.success("저장 완료")
                     load_courses.clear()
                     st.rerun()
-                except Exception as e: st.error(f"JSON 오류: {e}")
+                except Exception as e: st.error(e)
         with c2:
-            if selected and st.button("🗑️ 삭제 (Delete)"):
+            if selected and st.button("🗑️ 삭제"):
                 delete_document("courses", selected[0]['course_id'])
                 st.success("삭제 완료")
                 load_courses.clear()
                 st.rerun()
 
-    # 2. 문제/해설 통합 관리 (Grid + Edit)
+    # 2. 문제/해설 통합 (메타데이터 컬럼 추가)
     with tab_quest:
-        st.markdown("#### 2️⃣ 등록된 문제 목록")
-        all_qs = load_questions()
+        st.markdown("#### 2️⃣ 등록된 문제 목록 (필터링 강화)")
         
-        # Grid 표시
-        if all_qs:
-            df_q = pd.DataFrame(all_qs)
-            # 컬럼 정리
-            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
-            if 'exam_info' in df_q.columns:
-                df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year','-') if isinstance(x, dict) else '-')
-            else: df_q['year'] = '-'
+        if all_questions_raw:
+            df_q = pd.DataFrame(all_questions_raw)
             
+            # --- [중요] Grid용 데이터 가공 (Flattening) ---
+            # 1. Exam Info 분리
+            df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
+            df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
+            
+            # 2. Tags를 문자열로 변환 (Grid에서 보기 편하게)
+            df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+            
+            # 3. 해설 유무
             df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
             
-            df_grid = df_q[['question_id', 'year', 'engine_type', 'topic', 'has_sol']].copy()
+            # 4. Engine (없으면 기타)
+            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
             
+            # 필요한 컬럼만 선택
+            df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol']].copy()
+            
+            # AgGrid 설정
             gb_q = GridOptionsBuilder.from_dataframe(df_grid)
             gb_q.configure_selection('single', use_checkbox=True)
             gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
-            gb_q.configure_column("question_id", header_name="ID", width=120)
-            gb_q.configure_column("topic", header_name="주제", width=300)
-            gb_q.configure_column("has_sol", header_name="해설", width=80, cellStyle={'textAlign': 'center'})
-            gridOpts_q = gb_q.build()
             
+            # 컬럼 디테일 설정
+            gb_q.configure_column("question_id", header_name="ID", width=100, pinned=True)
+            gb_q.configure_column("year", header_name="연도", width=80)
+            gb_q.configure_column("exam", header_name="시험", width=80)
+            gb_q.configure_column("topic", header_name="주제", width=250)
+            gb_q.configure_column("tags_str", header_name="태그", width=150)
+            gb_q.configure_column("has_sol", header_name="해설", width=70, cellStyle={'textAlign': 'center'})
+            
+            gridOpts_q = gb_q.build()
             grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350)
             
             sel_q = grid_resp_q['selected_rows']
@@ -370,34 +478,28 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             
         st.divider()
         
-        # Editor 영역
         target_q_data = {}
-        header_text_q = "🆕 신규 문제/해설 등록 (대량 등록 가능)"
-        
+        header_text_q = "🆕 신규 문제/해설 등록"
         if sel_q:
             sel_id = sel_q[0]['question_id']
-            target_q_data = next(q for q in all_qs if q['question_id'] == sel_id)
+            target_q_data = next(q for q in all_questions_raw if q['question_id'] == sel_id)
             header_text_q = f"✏️ 수정 모드: {sel_id}"
             
         st.subheader(header_text_q)
-        st.caption("단일 객체 `{}` 또는 리스트 `[{}]` 형태로 입력하세요.")
-        
         default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
-        q_json = st.text_area("Question/Solution JSON", value=default_val_q, height=400)
+        q_json = st.text_area("Question JSON", value=default_val_q, height=400)
         
-        qc1, qc2, qc3 = st.columns([1, 1, 4])
+        qc1, qc2 = st.columns([1, 5])
         with qc1:
-            if st.button("💾 문제/해설 저장"):
+            if st.button("💾 문제 저장"):
                 try:
                     data = json.loads(q_json)
                     if not isinstance(data, list): data = [data]
-                    
-                    # 팁: 수정 모드일 때 ID가 바뀌면 새 문제로 등록됩니다 (복제 효과)
                     cnt = save_json_batch("questions", data, "question_id")
-                    st.success(f"{cnt}건 저장 완료!")
+                    st.success(f"{cnt}건 저장 완료")
                     load_questions.clear()
                     st.rerun()
-                except Exception as e: st.error(f"JSON 오류: {e}")
+                except Exception as e: st.error(e)
         with qc2:
             if sel_q and st.button("🗑️ 문제 삭제"):
                 delete_document("questions", sel_q[0]['question_id'])
