@@ -430,26 +430,35 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                 load_courses.clear()
                 st.rerun()
 
-    # 2. 문제/해설 통합 (메타데이터 컬럼 추가)
+    # 2. 문제/해설 통합 (메타데이터 컬럼 추가 & 방어 로직 적용)
     with tab_quest:
         st.markdown("#### 2️⃣ 등록된 문제 목록 (필터링 강화)")
         
         if all_questions_raw:
             df_q = pd.DataFrame(all_questions_raw)
             
-            # --- [중요] Grid용 데이터 가공 (Flattening) ---
-            # 1. Exam Info 분리
+            # --- [🚨 핵심 수정] 데이터가 없을 경우를 대비한 방어 로직 ---
+            # 컬럼이 아예 없으면 생성해줍니다.
+            if 'exam_info' not in df_q.columns:
+                df_q['exam_info'] = None
+            if 'tags' not in df_q.columns:
+                df_q['tags'] = None
+            if 'engine_type' not in df_q.columns: 
+                df_q['engine_type'] = '-'
+            if 'topic' not in df_q.columns:
+                df_q['topic'] = '제목 없음'
+            # -------------------------------------------------------
+            
+            # --- Grid용 데이터 가공 (Flattening) ---
+            # 1. Exam Info 분리 (안전하게 처리)
             df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
             df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
             
-            # 2. Tags를 문자열로 변환 (Grid에서 보기 편하게)
+            # 2. Tags를 문자열로 변환 (리스트가 아니거나 None이면 빈 문자열)
             df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
             
             # 3. 해설 유무
             df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
-            
-            # 4. Engine (없으면 기타)
-            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
             
             # 필요한 컬럼만 선택
             df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol']].copy()
@@ -482,7 +491,8 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         header_text_q = "🆕 신규 문제/해설 등록"
         if sel_q:
             sel_id = sel_q[0]['question_id']
-            target_q_data = next(q for q in all_questions_raw if q['question_id'] == sel_id)
+            # 원본 데이터에서 찾을 때 안전하게
+            target_q_data = next((q for q in all_questions_raw if q['question_id'] == sel_id), {})
             header_text_q = f"✏️ 수정 모드: {sel_id}"
             
         st.subheader(header_text_q)
