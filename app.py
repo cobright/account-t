@@ -536,7 +536,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                             # 실제로는 model.generate_content() 등을 호출해야 함
                                             prompt = f"문제: {q_data['content_markdown']}\n이 문제에 대한 상세한 단계별 해설을 작성해줘."
                                             try:
-                                                model = genai.GenerativeModel("gemini-pro")
+                                                model = genai.GenerativeModel("gemini-2.5-flash")
                                                 response = model.generate_content(prompt)
                                                 st.markdown("### 🤖 AI 해설")
                                                 st.markdown(response.text)
