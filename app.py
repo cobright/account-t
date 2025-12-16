@@ -142,6 +142,9 @@ def save_json_batch(collection_name, items, id_field):
     batch.commit()
     return count
 
+def delete_document(collection_name, doc_id):
+    db.collection(collection_name).document(str(doc_id)).delete()
+
 # =========================================================
 # 4. UI Layout
 # =========================================================
@@ -204,7 +207,6 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     life = st.number_input("내용연수", value=defaults.get('life', 5))
                     rate = None
                     if "db" in sim_type: rate = st.number_input("상각률", value=defaults.get('rate', 0.451))
-                    
                     m_code = "SL"
                     if "db" in sim_type: m_code = "DB"
                     elif "syd" in sim_type: m_code = "SYD"
@@ -245,9 +247,11 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                         if q_data.get('choices'):
                             opts = q_data['choices']
                             if isinstance(opts, dict): opts = [f"{k}. {v}" for k,v in sorted(opts.items())]
+                            elif isinstance(opts, list): opts = opts
+                            else: opts = []
                             st.radio("정답", opts, label_visibility="collapsed")
                     with c_a:
-                        with st.expander("💡 해설 보기"):
+                        with st.expander("💡 해설 보기", expanded=True):
                             st.info(f"정답: {q_data.get('answer', '?')}")
                             sols = q_data.get('solution_steps') or q_data.get('steps')
                             if sols:
@@ -257,144 +261,146 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     st.divider()
                             else:
                                 st.warning("해설 없음")
-                                if GEMINI_AVAILABLE and st.button("🤖 AI 해설 요청"):
-                                    st.info("AI 기능 호출됨 (실제 구현 시 API 사용)")
                 else:
                     st.info(f"'{kws}' 관련 문제가 없습니다.")
             else:
                 st.info("키워드가 등록되지 않았습니다.")
 
 # ---------------------------------------------------------
-# [B] 관리자 모드 (Admin) - AgGrid 적용됨 ✨
+# [B] 관리자 모드 (Admin) - ALL GRID v4.0
 # ---------------------------------------------------------
 elif mode == "🛠️ 관리자 모드 (Admin)":
-    st.header("🛠️ 통합 데이터 관리 센터 (with AgGrid)")
+    st.header("🛠️ 통합 관리 센터")
     
-    tab_course, tab_quest, tab_clinic = st.tabs(["📚 커리큘럼", "📥 대량 등록", "🏥 해설 클리닉"])
+    # 탭을 2개로 통합하여 깔끔하게 정리
+    tab_course, tab_quest = st.tabs(["📚 커리큘럼 관리", "📥 문제/해설 통합 관리"])
     
-    # 1. 커리큘럼 (JSON 등록 유지)
+    # 1. 커리큘럼 관리 (Grid + Edit)
     with tab_course:
-        st.caption("커리큘럼은 구조가 복잡하여 JSON 업로드 방식을 권장합니다.")
-        c_json = st.text_area("Curriculum JSON", height=150)
-        if st.button("커리큘럼 저장"):
-            try:
-                data = json.loads(c_json)
-                if not isinstance(data, list): data = [data]
-                save_json_batch("courses", data, "course_id")
-                st.success("저장 완료")
-                load_courses.clear()
-            except Exception as e: st.error(e)
-            
-        # [NEW] 등록된 커리큘럼 현황 (Grid)
+        st.markdown("#### 1️⃣ 등록된 코스 목록")
         courses = load_courses()
+        
+        # Grid 표시
         if courses:
             df_c = pd.DataFrame(courses)
-            # 필요한 컬럼만 보기 좋게 정리
             df_view = df_c[['course_id', 'engine_type', 'title']].copy()
-            df_view['chapters'] = df_c['chapters'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+            df_view['chapters_count'] = df_c['chapters'].apply(lambda x: len(x) if isinstance(x, list) else 0)
             
-            st.markdown("#### 📊 등록된 코스 현황")
-            AgGrid(df_view, fit_columns_on_grid_load=True, height=200)
+            gb = GridOptionsBuilder.from_dataframe(df_view)
+            gb.configure_selection('single', use_checkbox=True)
+            gb.configure_column("course_id", header_name="ID", width=100)
+            gb.configure_column("title", header_name="코스 제목", width=300)
+            gridOptions = gb.build()
+            
+            grid_resp = AgGrid(df_view, gridOptions=gridOptions, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=200)
+            
+            selected = grid_resp['selected_rows']
+            if isinstance(selected, pd.DataFrame): selected = selected.to_dict('records')
+        else:
+            st.info("등록된 커리큘럼이 없습니다.")
+            selected = []
 
-    # 2. 대량 등록 (기존 유지)
-    with tab_quest:
-        st.info("문제/해설 JSON 대량 업로드")
-        q_json = st.text_area("Data JSON", height=200)
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("문제 업로드"):
-                try:
-                    d = json.loads(q_json)
-                    if not isinstance(d, list): d = [d]
-                    save_json_batch("questions", d, "question_id")
-                    st.success("완료")
-                    load_questions.clear()
-                except Exception as e: st.error(e)
-        with c2:
-            if st.button("해설 합체"):
-                st.info("해설 업데이트 로직 동작")
-
-    # 3. 해설 클리닉 (AgGrid의 진가 발휘!)
-    with tab_clinic:
-        st.markdown("#### 🏥 문제 조회 및 수정")
-        st.caption("아래 표에서 문제를 선택(체크)하면 하단에 수정 에디터가 열립니다.")
+        st.divider()
         
-        all_qs = load_questions()
-        if all_qs:
-            # 1) 그리드용 데이터프레임 만들기 (가볍게)
-            df_q = pd.DataFrame(all_qs)
+        # Editor 영역
+        edit_target = {}
+        header_text = "🆕 신규 커리큘럼 등록"
+        
+        if selected:
+            edit_target = next(c for c in courses if c['course_id'] == selected[0]['course_id'])
+            header_text = f"✏️ 수정 모드: {edit_target['course_id']}"
             
-            # 컬럼 정리 (없으면 생성)
+        st.subheader(header_text)
+        
+        # JSON Editor
+        default_val = json.dumps(edit_target, indent=2, ensure_ascii=False) if edit_target else ""
+        c_json = st.text_area("Course JSON", value=default_val, height=300, placeholder='{\n  "course_id": "PV_001",\n  "title": "...",\n  ...\n}')
+        
+        c1, c2, c3 = st.columns([1, 1, 4])
+        with c1:
+            if st.button("💾 저장 (Save)"):
+                try:
+                    data = json.loads(c_json)
+                    if not isinstance(data, list): data = [data]
+                    save_json_batch("courses", data, "course_id")
+                    st.success("저장 완료!")
+                    load_courses.clear()
+                    st.rerun()
+                except Exception as e: st.error(f"JSON 오류: {e}")
+        with c2:
+            if selected and st.button("🗑️ 삭제 (Delete)"):
+                delete_document("courses", selected[0]['course_id'])
+                st.success("삭제 완료")
+                load_courses.clear()
+                st.rerun()
+
+    # 2. 문제/해설 통합 관리 (Grid + Edit)
+    with tab_quest:
+        st.markdown("#### 2️⃣ 등록된 문제 목록")
+        all_qs = load_questions()
+        
+        # Grid 표시
+        if all_qs:
+            df_q = pd.DataFrame(all_qs)
+            # 컬럼 정리
             if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
             if 'exam_info' in df_q.columns:
                 df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year','-') if isinstance(x, dict) else '-')
-            else:
-                df_q['year'] = '-'
-                
-            # 해설 유무 체크 (O/X)
-            def check_sol(row):
-                if row.get('solution_steps') or row.get('steps'): return "O"
-                return "X"
-            df_q['has_sol'] = df_q.apply(check_sol, axis=1)
+            else: df_q['year'] = '-'
             
-            # 표시할 컬럼만 선택
+            df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
+            
             df_grid = df_q[['question_id', 'year', 'engine_type', 'topic', 'has_sol']].copy()
             
-            # 2) AgGrid 설정
-            gb = GridOptionsBuilder.from_dataframe(df_grid)
-            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10) # 10개씩 보기
-            gb.configure_selection('single', use_checkbox=True) # 체크박스 선택
-            gb.configure_column("question_id", header_name="ID", width=120)
-            gb.configure_column("topic", header_name="주제", width=300)
-            gb.configure_column("has_sol", header_name="해설", width=80, cellStyle={'textAlign': 'center'})
-            gridOptions = gb.build()
+            gb_q = GridOptionsBuilder.from_dataframe(df_grid)
+            gb_q.configure_selection('single', use_checkbox=True)
+            gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
+            gb_q.configure_column("question_id", header_name="ID", width=120)
+            gb_q.configure_column("topic", header_name="주제", width=300)
+            gb_q.configure_column("has_sol", header_name="해설", width=80, cellStyle={'textAlign': 'center'})
+            gridOpts_q = gb_q.build()
             
-            # 3) 그리드 출력
-            grid_response = AgGrid(
-                df_grid, 
-                gridOptions=gridOptions, 
-                update_mode=GridUpdateMode.SELECTION_CHANGED, 
-                fit_columns_on_grid_load=True,
-                height=350, 
-                theme='streamlit'
-            )
+            grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350)
             
-            # 4) 선택된 행 처리 (오류 수정됨 ✨)
-            selected = grid_response['selected_rows']
-
-            # [핵심 수정] selected가 DataFrame일 경우 리스트로 변환
-            if isinstance(selected, pd.DataFrame):
-                selected = selected.to_dict('records')
-
-            # 이제 selected는 무조건 리스트이므로 안전함
-            if selected:
-                sel_row = selected[0] 
-                sel_id = sel_row['question_id']
-                
-                st.divider()
-                st.markdown(f"### ✏️ 편집 모드: {sel_id}")
-                
-                # 원본 데이터 가져오기
-                target_q = next((q for q in all_qs if q['question_id'] == sel_id), None)
-                
-                if target_q:
-                    # 해설 데이터 추출
-                    current_sols = target_q.get('solution_steps') or target_q.get('steps') or []
+            sel_q = grid_resp_q['selected_rows']
+            if isinstance(sel_q, pd.DataFrame): sel_q = sel_q.to_dict('records')
+        else:
+            st.info("등록된 문제가 없습니다.")
+            sel_q = []
+            
+        st.divider()
+        
+        # Editor 영역
+        target_q_data = {}
+        header_text_q = "🆕 신규 문제/해설 등록 (대량 등록 가능)"
+        
+        if sel_q:
+            sel_id = sel_q[0]['question_id']
+            target_q_data = next(q for q in all_qs if q['question_id'] == sel_id)
+            header_text_q = f"✏️ 수정 모드: {sel_id}"
+            
+        st.subheader(header_text_q)
+        st.caption("단일 객체 `{}` 또는 리스트 `[{}]` 형태로 입력하세요.")
+        
+        default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
+        q_json = st.text_area("Question/Solution JSON", value=default_val_q, height=400)
+        
+        qc1, qc2, qc3 = st.columns([1, 1, 4])
+        with qc1:
+            if st.button("💾 문제/해설 저장"):
+                try:
+                    data = json.loads(q_json)
+                    if not isinstance(data, list): data = [data]
                     
-                    # JSON 에디터
-                    new_json = st.text_area(
-                        "해설 데이터 (JSON)", 
-                        value=json.dumps(current_sols, indent=2, ensure_ascii=False),
-                        height=300
-                    )
-                    
-                    c_save, c_del = st.columns([1, 4])
-                    with c_save:
-                        if st.button("💾 저장하기"):
-                            try:
-                                new_sols = json.loads(new_json)
-                                db.collection("questions").document(sel_id).update({"solution_steps": new_sols})
-                                st.success("수정 완료! 목록을 갱신합니다.")
-                                load_questions.clear() # 캐시 삭제
-                                st.rerun()
-                            except Exception as e: st.error(f"JSON 오류: {e}")
+                    # 팁: 수정 모드일 때 ID가 바뀌면 새 문제로 등록됩니다 (복제 효과)
+                    cnt = save_json_batch("questions", data, "question_id")
+                    st.success(f"{cnt}건 저장 완료!")
+                    load_questions.clear()
+                    st.rerun()
+                except Exception as e: st.error(f"JSON 오류: {e}")
+        with qc2:
+            if sel_q and st.button("🗑️ 문제 삭제"):
+                delete_document("questions", sel_q[0]['question_id'])
+                st.success("삭제 완료")
+                load_questions.clear()
+                st.rerun()
