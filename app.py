@@ -770,22 +770,50 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             else: header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
             
         st.subheader(header_text_q)
-        default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
-        q_json = st.text_area("Question JSON", value=default_val_q, height=400)
         
+        # 1. 메인 데이터 (문제 정보)
+        # 해설(solution_steps)은 여기서 제외하고 보여줄 수도 있지만, 
+        # 일단 전체를 다루는 마스터 JSON 창은 유지합니다.
+        default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
+        
+        with st.expander("📝 전체 JSON 데이터 (고급 사용자용)", expanded=False):
+            q_json = st.text_area("Master JSON", value=default_val_q, height=300)
+
+        # 2. [NEW] 해설 전용 입력창 (편의 기능) ✨
+        st.markdown("#### 💡 해설(Solution) 관리")
+        st.caption("AI 튜터 프롬프트가 만든 JSON을 여기에 붙여넣으세요. 위 마스터 JSON에 자동으로 합쳐집니다.")
+        
+        # 기존 해설이 있으면 가져오기
+        current_sol = target_q_data.get('solution_steps', [])
+        default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
+        
+        sol_json = st.text_area("Solution JSON Steps", value=default_sol, height=200)
+
         qc1, qc2 = st.columns([1, 5])
         with qc1:
-            if st.button("💾 문제 저장"):
+            if st.button("💾 통합 저장"):
                 try:
-                    data = json.loads(q_json)
-                    if not isinstance(data, list): data = [data]
-                    save_json_batch("questions", data, "question_id")
-                    st.success("저장 완료"); load_questions.clear(); st.rerun()
-                except Exception as e: st.error(e)
-        with qc2:
-            if sel_q and st.button(f"🗑️ 선택된 {len(sel_q)}개 문제 삭제"):
-                deleted_count = 0
-                for row in sel_q:
-                    delete_document("questions", row['question_id'])
-                    deleted_count += 1
-                st.success(f"{deleted_count}개 삭제 완료"); load_questions.clear(); st.rerun()
+                    # 1. 마스터 JSON 파싱
+                    if q_json.strip():
+                        main_data = json.loads(q_json)
+                    else:
+                        main_data = {}
+
+                    # 2. 해설 JSON 파싱 및 병합 (Overwriting)
+                    if sol_json.strip():
+                        sol_data = json.loads(sol_json)
+                        # 리스트 형태인지 확인
+                        if isinstance(sol_data, list):
+                            main_data['solution_steps'] = sol_data
+                        else:
+                            st.warning("해설 데이터는 리스트 형식([...])이어야 합니다.")
+                    
+                    # 3. 저장 실행
+                    if not isinstance(main_data, list): main_data = [main_data]
+                    save_json_batch("questions", main_data, "question_id")
+                    
+                    st.success("저장 완료! (해설이 병합되었습니다)")
+                    load_questions.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"JSON 오류: {e}")
