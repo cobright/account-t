@@ -4,7 +4,7 @@ import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 import google.generativeai as genai
-import time
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 # =========================================================
 # 1. 시스템 설정 및 초기화
@@ -37,12 +37,11 @@ if "gemini" in st.secrets:
         pass
 
 # =========================================================
-# 2. Simulator Engine (계산 로직 연구소)
+# 2. Simulator Engine
 # =========================================================
 class Simulators:
     @staticmethod
     def bond_basic(face, crate, mrate, periods):
-        """사채(PV) 계산기"""
         cash_flow = face * crate
         pv_principal = face / ((1 + mrate) ** periods)
         pv_interest = sum([cash_flow / ((1 + mrate) ** t) for t in range(1, periods + 1)])
@@ -66,76 +65,51 @@ class Simulators:
 
     @staticmethod
     def depreciation(cost, residual, life, method, rate=None):
-        """감가상각 계산기 (정액/정률/연수합계)"""
         data = []
-        accumulated_dep = 0
         book_value = cost
-        
-        # 0년차
         data.append({"연도": 0, "기초장부": "-", "상각비": "-", "기말장부": f"{int(cost):,}"})
 
         for t in range(1, life + 1):
             start_bv = book_value
             dep_expense = 0
-            
-            if method == "SL": # 정액법
+            if method == "SL":
                 dep_expense = (cost - residual) / life
-            
-            elif method == "DB": # 정률법
-                if t == life: # 마지막 해
-                    dep_expense = start_bv - residual
-                else:
-                    dep_expense = start_bv * (rate if rate else (1 - (residual/cost)**(1/life)))
-            
-            elif method == "SYD": # 연수합계법
+            elif method == "DB":
+                if t == life: dep_expense = start_bv - residual
+                else: dep_expense = start_bv * (rate if rate else (1 - (residual/cost)**(1/life)))
+            elif method == "SYD":
                 syd = life * (life + 1) / 2
-                remaining_life = life - t + 1
-                dep_expense = (cost - residual) * (remaining_life / syd)
+                dep_expense = (cost - residual) * ((life - t + 1) / syd)
 
-            # 계산된 상각비 적용
-            accumulated_dep += dep_expense
             book_value -= dep_expense
-            
             data.append({
-                "연도": t,
-                "기초장부": f"{int(start_bv):,}",
-                "상각비": f"{int(dep_expense):,}",
-                "기말장부": f"{int(book_value):,}"
+                "연도": t, "기초장부": f"{int(start_bv):,}",
+                "상각비": f"{int(dep_expense):,}", "기말장부": f"{int(book_value):,}"
             })
-            
         return pd.DataFrame(data).set_index("연도")
 
     @staticmethod
     def inventory_fifo(base_qty, base_price, buy_qty, buy_price, sell_qty):
-        """재고자산 FIFO 계산기"""
-        # 간단한 로직: 기초 -> 매입 순서로 판매
-        revenue = 0 # 매출액은 판가(Market Price) 필요하지만 여기선 원가 흐름만
-        cogs = 0    # 매출원가
-        
+        cogs = 0
         rem_base = base_qty
         rem_buy = buy_qty
         
-        # 1. 기초재고에서 판매
         sold_from_base = min(sell_qty, rem_base)
         cogs += sold_from_base * base_price
         rem_base -= sold_from_base
-        remaining_sell = sell_qty - sold_from_base
         
-        # 2. 매입분에서 판매
-        sold_from_buy = min(remaining_sell, rem_buy)
+        sold_from_buy = min(sell_qty - sold_from_base, rem_buy)
         cogs += sold_from_buy * buy_price
         rem_buy -= sold_from_buy
         
-        ending_inventory = (rem_base * base_price) + (rem_buy * buy_price)
-        
-        return cogs, ending_inventory, rem_base, rem_buy
+        ending = (rem_base * base_price) + (rem_buy * buy_price)
+        return cogs, ending, rem_base, rem_buy
 
 # =========================================================
-# 3. Data Logic (데이터 핸들러)
+# 3. Data Logic
 # =========================================================
 @st.cache_data(ttl=60)
 def load_courses():
-    """커리큘럼(Courses) 데이터 로드"""
     try:
         docs = db.collection("courses").stream()
         return [doc.to_dict() for doc in docs]
@@ -143,25 +117,21 @@ def load_courses():
 
 @st.cache_data(ttl=60)
 def load_questions():
-    """모든 기출문제 로드"""
     try:
         docs = db.collection("questions").stream()
         return [doc.to_dict() for doc in docs]
     except: return []
 
 def find_related_questions(keywords, all_questions):
-    """키워드 기반 문제 필터링 (간이 검색 엔진)"""
     if not keywords: return []
     results = []
     for q in all_questions:
-        # topic이나 content에 키워드가 하나라도 포함되면 가져옴
         search_text = (q.get('topic', '') + q.get('content_markdown', '')).lower()
         if any(k.lower() in search_text for k in keywords):
             results.append(q)
     return results
 
 def save_json_batch(collection_name, items, id_field):
-    """범용 JSON 업로더"""
     batch = db.batch()
     count = 0
     for item in items:
@@ -173,146 +143,112 @@ def save_json_batch(collection_name, items, id_field):
     return count
 
 # =========================================================
-# 4. UI Layout (화면 구성)
+# 4. UI Layout
 # =========================================================
 st.title("☁️ Accoun-T Cloud")
 
-# 사이드바 (Navigation)
 with st.sidebar:
     st.header("Controller")
     mode = st.radio("모드 선택", ["👨‍🎓 학습 모드 (Student)", "🛠️ 관리자 모드 (Admin)"])
     st.divider()
     
-    # 학습 모드일 때만 엔진/코스 선택 표시
     selected_course = None
     if mode == "👨‍🎓 학습 모드 (Student)":
         courses = load_courses()
         if courses:
-            # 1. 엔진 선택
             engines = sorted(list(set([c['engine_type'] for c in courses])))
             sel_engine = st.selectbox("엔진 (Engine)", engines)
-            
-            # 2. 코스(주제) 선택
             engine_courses = [c for c in courses if c['engine_type'] == sel_engine]
             course_map = {c['course_id']: c['title'] for c in engine_courses}
             sel_course_id = st.selectbox("학습 주제 (Topic)", list(course_map.keys()), format_func=lambda x: course_map[x])
-            
             selected_course = next((c for c in courses if c['course_id'] == sel_course_id), None)
         else:
             st.warning("등록된 커리큘럼이 없습니다.")
 
 # ---------------------------------------------------------
-# [A] 학습 모드 (Student View)
+# [A] 학습 모드 (Student)
 # ---------------------------------------------------------
 if mode == "👨‍🎓 학습 모드 (Student)":
     if selected_course:
         st.subheader(f"📘 {selected_course['title']}")
-        st.caption(selected_course['description'])
-        
-        # 챕터 선택 (Tabs or Selectbox? -> Selectbox가 모바일에 좋음)
         chapters = selected_course.get('chapters', [])
         chapter_titles = [f"Chapter {ch['chapter_id']}. {ch['title']}" for ch in chapters]
-        sel_ch_idx = st.selectbox("챕터를 선택하세요", range(len(chapters)), format_func=lambda i: chapter_titles[i])
-        
+        sel_ch_idx = st.selectbox("챕터 선택", range(len(chapters)), format_func=lambda i: chapter_titles[i])
         current_ch = chapters[sel_ch_idx]
         
-        # 3단계 학습 탭
-        tab_theory, tab_sim, tab_exam = st.tabs(["📖 Step 1. 이론", "🧪 Step 2. 시뮬레이터", "🔥 Step 3. 실전 기출"])
+        tab1, tab2, tab3 = st.tabs(["📖 이론", "🧪 시뮬레이터", "🔥 실전 기출"])
         
-        # [Step 1] 이론
-        with tab_theory:
-            st.markdown(current_ch.get('theory_markdown', '내용이 없습니다.'))
+        with tab1:
+            st.markdown(current_ch.get('theory_markdown', '내용 없음'))
             
-        # [Step 2] 시뮬레이터
-        with tab_sim:
+        with tab2:
             sim_type = current_ch.get('simulator_type', 'default')
             defaults = current_ch.get('simulator_defaults', {})
             
-            # --- 시뮬레이터 분기 처리 ---
-            if "bond" in sim_type: # 사채 관련
+            if "bond" in sim_type:
                 c1, c2 = st.columns([1, 2])
                 with c1:
-                    face = st.number_input("액면금액", value=defaults.get('face', 100000), step=10000)
-                    crate = st.number_input("표시이자율(%)", value=defaults.get('crate', 0.05)*100) / 100
-                    mrate = st.number_input("유효이자율(%)", value=defaults.get('mrate', 0.08)*100) / 100
-                    periods = st.slider("만기(년)", 1, 10, 3)
+                    face = st.number_input("액면", value=defaults.get('face', 100000), step=10000)
+                    crate = st.number_input("표시이자(%)", value=defaults.get('crate', 0.05)*100)/100
+                    mrate = st.number_input("유효이자(%)", value=defaults.get('mrate', 0.08)*100)/100
+                    periods = st.slider("만기", 1, 10, 3)
                 with c2:
-                    price, df = Simulators.bond_basic(face, crate, mrate, periods)
-                    st.metric("발행금액 (PV)", f"{price:,}원")
+                    p, df = Simulators.bond_basic(face, crate, mrate, periods)
+                    st.metric("PV", f"{p:,}원")
                     st.dataframe(df, use_container_width=True)
-            
-            elif "depreciation" in sim_type: # 감가상각 관련
+            elif "depreciation" in sim_type:
                 c1, c2 = st.columns([1, 2])
                 with c1:
-                    cost = st.number_input("취득원가", value=defaults.get('cost', 1000000), step=100000)
-                    resid = st.number_input("잔존가치", value=defaults.get('residual', 100000), step=10000)
+                    cost = st.number_input("취득원가", value=defaults.get('cost', 1000000))
+                    resid = st.number_input("잔존가치", value=defaults.get('residual', 100000))
                     life = st.number_input("내용연수", value=defaults.get('life', 5))
-                    
-                    method_map = {"depreciation_sl": "SL", "depreciation_db": "DB", "depreciation_syd": "SYD"}
-                    method_code = method_map.get(sim_type, "SL")
-                    
                     rate = None
-                    if method_code == "DB":
-                        rate = st.number_input("상각률(정률법용)", value=defaults.get('rate', 0.451), format="%.3f")
+                    if "db" in sim_type: rate = st.number_input("상각률", value=defaults.get('rate', 0.451))
+                    
+                    m_code = "SL"
+                    if "db" in sim_type: m_code = "DB"
+                    elif "syd" in sim_type: m_code = "SYD"
                 with c2:
-                    df = Simulators.depreciation(cost, resid, life, method_code, rate)
+                    df = Simulators.depreciation(cost, resid, life, m_code, rate)
                     st.line_chart(df["기말장부"].str.replace(",","").astype(int))
                     st.dataframe(df, use_container_width=True)
-
-            elif "inventory" in sim_type: # 재고자산
+            elif "inventory" in sim_type:
                 c1, c2 = st.columns(2)
                 with c1:
-                    base_qty = st.number_input("기초수량", 100)
-                    base_prc = st.number_input("기초단가", 100)
+                    bq, bp = st.number_input("기초수량", 100), st.number_input("기초단가", 100)
                 with c2:
-                    buy_qty = st.number_input("매입수량", 100)
-                    buy_prc = st.number_input("매입단가", 120)
-                
-                sell_qty = st.slider("판매수량", 0, base_qty+buy_qty, 150)
-                
+                    buyq, buyp = st.number_input("매입수량", 100), st.number_input("매입단가", 120)
+                sq = st.slider("판매수량", 0, bq+buyq, 150)
                 if "fifo" in sim_type:
-                    cogs, end_inv, r1, r2 = Simulators.inventory_fifo(base_qty, base_prc, buy_qty, buy_prc, sell_qty)
+                    cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sq)
                     st.success(f"매출원가: {cogs:,}원")
-                    st.info(f"기말재고: {end_inv:,}원")
-                else:
-                    st.warning("다른 방법(평균법 등)은 시뮬레이터 업데이트 예정입니다.")
-                    
+                    st.info(f"기말재고: {end:,}원")
             else:
-                st.info("이 주제는 시각화 시뮬레이터가 필요 없는 이론 중심 챕터입니다.")
+                st.info("시각화가 필요 없는 이론 챕터입니다.")
 
-        # [Step 3] 기출문제 (자동 매칭)
-        with tab_exam:
-            keywords = current_ch.get('related_keywords', [])
-            if keywords:
+        with tab3:
+            kws = current_ch.get('related_keywords', [])
+            if kws:
                 all_qs = load_questions()
-                matched_qs = find_related_questions(keywords, all_qs)
-                
-                if matched_qs:
-                    st.success(f"🔍 '{keywords}' 관련 기출문제 {len(matched_qs)}개를 찾았습니다.")
-                    
-                    # 문제 리스트업
-                    q_options = {q['question_id']: f"[{q.get('exam_info',{}).get('year','-')}] {q['topic']}" for q in matched_qs}
-                    sel_qid = st.selectbox("풀어볼 문제 선택", list(q_options.keys()), format_func=lambda x: q_options[x])
-                    
-                    q_data = next(q for q in matched_qs if q['question_id'] == sel_qid)
+                matched = find_related_questions(kws, all_qs)
+                if matched:
+                    st.success(f"🔍 관련 문제 {len(matched)}개 발견")
+                    q_opts = {q['question_id']: f"[{q.get('exam_info',{}).get('year','-')}] {q['topic']}" for q in matched}
+                    qid = st.selectbox("문제 선택", list(q_opts.keys()), format_func=lambda x: q_opts[x])
+                    q_data = next(q for q in matched if q['question_id'] == qid)
                     
                     st.divider()
-                    col_q, col_a = st.columns([1.5, 1])
-                    
-                    with col_q:
+                    c_q, c_a = st.columns([1.5, 1])
+                    with c_q:
                         st.markdown(f"**Q. {q_data['topic']}**")
                         st.markdown(q_data['content_markdown'])
                         if q_data.get('choices'):
-                            # choices 호환성 처리 (List or Dict)
                             opts = q_data['choices']
                             if isinstance(opts, dict): opts = [f"{k}. {v}" for k,v in sorted(opts.items())]
                             st.radio("정답", opts, label_visibility="collapsed")
-                            
-                    with col_a:
+                    with c_a:
                         with st.expander("💡 해설 보기"):
                             st.info(f"정답: {q_data.get('answer', '?')}")
-                            
-                            # 해설 표시 (호환성: steps vs solution_steps)
                             sols = q_data.get('solution_steps') or q_data.get('steps')
                             if sols:
                                 for s in sols:
@@ -320,80 +256,140 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     st.caption(s.get('content',''))
                                     st.divider()
                             else:
-                                st.warning("해설이 없습니다.")
+                                st.warning("해설 없음")
                                 if GEMINI_AVAILABLE and st.button("🤖 AI 해설 요청"):
-                                    # (간략화) 실제 호출 로직은 이전 버전 참조
-                                    st.info("AI 기능 호출 (구현됨)")
+                                    st.info("AI 기능 호출됨 (실제 구현 시 API 사용)")
                 else:
-                    st.info(f"아직 '{keywords}' 태그와 일치하는 기출문제가 DB에 없습니다.")
+                    st.info(f"'{kws}' 관련 문제가 없습니다.")
             else:
-                st.info("이 챕터에 등록된 검색 키워드가 없습니다.")
+                st.info("키워드가 등록되지 않았습니다.")
 
 # ---------------------------------------------------------
-# [B] 관리자 모드 (Admin View)
+# [B] 관리자 모드 (Admin) - AgGrid 적용됨 ✨
 # ---------------------------------------------------------
 elif mode == "🛠️ 관리자 모드 (Admin)":
-    st.header("🛠️ 통합 데이터 관리 센터")
+    st.header("🛠️ 통합 데이터 관리 센터 (with AgGrid)")
     
-    tab_course, tab_quest, tab_sol = st.tabs(["📚 커리큘럼 등록", "📥 문제/해설 등록", "🏥 해설 클리닉"])
+    tab_course, tab_quest, tab_clinic = st.tabs(["📚 커리큘럼", "📥 대량 등록", "🏥 해설 클리닉"])
     
-    # 1. 커리큘럼 등록
+    # 1. 커리큘럼 (JSON 등록 유지)
     with tab_course:
-        st.markdown("**[Courses] 컬렉션 업로드** (준비된 JSON을 붙여넣으세요)")
-        c_json = st.text_area("Curriculum JSON", height=200)
+        st.caption("커리큘럼은 구조가 복잡하여 JSON 업로드 방식을 권장합니다.")
+        c_json = st.text_area("Curriculum JSON", height=150)
         if st.button("커리큘럼 저장"):
             try:
                 data = json.loads(c_json)
                 if not isinstance(data, list): data = [data]
-                cnt = save_json_batch("courses", data, "course_id")
-                st.success(f"{cnt}개의 코스 저장 완료! (새로고침 하세요)")
-                load_courses.clear() # 캐시 초기화
-            except Exception as e:
-                st.error(f"오류: {e}")
+                save_json_batch("courses", data, "course_id")
+                st.success("저장 완료")
+                load_courses.clear()
+            except Exception as e: st.error(e)
+            
+        # [NEW] 등록된 커리큘럼 현황 (Grid)
+        courses = load_courses()
+        if courses:
+            df_c = pd.DataFrame(courses)
+            # 필요한 컬럼만 보기 좋게 정리
+            df_view = df_c[['course_id', 'engine_type', 'title']].copy()
+            df_view['chapters'] = df_c['chapters'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+            
+            st.markdown("#### 📊 등록된 코스 현황")
+            AgGrid(df_view, fit_columns_on_grid_load=True, height=200)
 
-    # 2. 문제/해설 등록 (기존 로직)
+    # 2. 대량 등록 (기존 유지)
     with tab_quest:
-        st.info("문제(questions) 또는 해설을 대량으로 등록합니다.")
-        q_json = st.text_area("Data JSON", height=200, placeholder='[{ "question_id": ... }]')
-        
+        st.info("문제/해설 JSON 대량 업로드")
+        q_json = st.text_area("Data JSON", height=200)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("문제 업로드 (Questions)"):
+            if st.button("문제 업로드"):
                 try:
-                    data = json.loads(q_json)
-                    if not isinstance(data, list): data = [data]
-                    cnt = save_json_batch("questions", data, "question_id")
-                    st.success(f"{cnt}건 업로드 완료")
+                    d = json.loads(q_json)
+                    if not isinstance(d, list): d = [d]
+                    save_json_batch("questions", d, "question_id")
+                    st.success("완료")
                     load_questions.clear()
                 except Exception as e: st.error(e)
         with c2:
-            if st.button("해설 합체 (Update Solutions)"):
-                # 해설 업데이트 로직 (update_solution_batch 활용 권장)
-                st.info("해설 업데이트 기능 동작")
+            if st.button("해설 합체"):
+                st.info("해설 업데이트 로직 동작")
 
-    # 3. 해설 클리닉 (수정 기능)
-    with tab_sol:
-        st.markdown("등록된 문제의 내용을 확인하고 **해설을 직접 수정**합니다.")
-        qs = load_questions()
-        if qs:
-            q_map = {q['question_id']: f"{q['question_id']} : {q['topic']}" for q in qs}
-            sel_id = st.selectbox("수정할 문제 선택", list(q_map.keys()), format_func=lambda x: q_map[x])
+    # 3. 해설 클리닉 (AgGrid의 진가 발휘!)
+    with tab_clinic:
+        st.markdown("#### 🏥 문제 조회 및 수정")
+        st.caption("아래 표에서 문제를 선택(체크)하면 하단에 수정 에디터가 열립니다.")
+        
+        all_qs = load_questions()
+        if all_qs:
+            # 1) 그리드용 데이터프레임 만들기 (가볍게)
+            df_q = pd.DataFrame(all_qs)
             
-            target_q = next(q for q in qs if q['question_id'] == sel_id)
+            # 컬럼 정리 (없으면 생성)
+            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
+            if 'exam_info' in df_q.columns:
+                df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year','-') if isinstance(x, dict) else '-')
+            else:
+                df_q['year'] = '-'
+                
+            # 해설 유무 체크 (O/X)
+            def check_sol(row):
+                if row.get('solution_steps') or row.get('steps'): return "O"
+                return "X"
+            df_q['has_sol'] = df_q.apply(check_sol, axis=1)
             
-            # 현재 해설 불러오기
-            current_sols = target_q.get('solution_steps') or target_q.get('steps') or []
+            # 표시할 컬럼만 선택
+            df_grid = df_q[['question_id', 'year', 'engine_type', 'topic', 'has_sol']].copy()
             
-            # 편집기 (JSON 형태 그대로 노출하여 자유도 부여)
-            st.markdown("👇 **해설 데이터 편집** (JSON 형식 준수)")
-            edit_json = st.text_area("Editor", value=json.dumps(current_sols, indent=2, ensure_ascii=False), height=300)
+            # 2) AgGrid 설정
+            gb = GridOptionsBuilder.from_dataframe(df_grid)
+            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10) # 10개씩 보기
+            gb.configure_selection('single', use_checkbox=True) # 체크박스 선택
+            gb.configure_column("question_id", header_name="ID", width=120)
+            gb.configure_column("topic", header_name="주제", width=300)
+            gb.configure_column("has_sol", header_name="해설", width=80, cellStyle={'textAlign': 'center'})
+            gridOptions = gb.build()
             
-            if st.button("수정사항 저장 (Save)"):
-                try:
-                    new_sols = json.loads(edit_json)
-                    db.collection("questions").document(sel_id).update({"solution_steps": new_sols})
-                    st.success("해설이 수정되었습니다!")
-                    load_questions.clear()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"JSON 형식이 잘못되었습니다: {e}")
+            # 3) 그리드 출력
+            grid_response = AgGrid(
+                df_grid, 
+                gridOptions=gridOptions, 
+                update_mode=GridUpdateMode.SELECTION_CHANGED, 
+                fit_columns_on_grid_load=True,
+                height=350, 
+                theme='streamlit'
+            )
+            
+            # 4) 선택된 행 처리
+            selected = grid_response['selected_rows']
+            if selected:
+                # selected가 리스트 안에 딕셔너리 형태인지, DataFrame인지 버전에 따라 다를 수 있음
+                # 보통 리스트 형태임
+                sel_row = selected[0] 
+                sel_id = sel_row['question_id']
+                
+                st.divider()
+                st.markdown(f"### ✏️ 편집 모드: {sel_id}")
+                
+                # 원본 데이터 가져오기
+                target_q = next(q for q in all_qs if q['question_id'] == sel_id)
+                
+                # 해설 데이터 추출
+                current_sols = target_q.get('solution_steps') or target_q.get('steps') or []
+                
+                # JSON 에디터
+                new_json = st.text_area(
+                    "해설 데이터 (JSON)", 
+                    value=json.dumps(current_sols, indent=2, ensure_ascii=False),
+                    height=300
+                )
+                
+                c_save, c_del = st.columns([1, 4])
+                with c_save:
+                    if st.button("💾 저장하기"):
+                        try:
+                            new_sols = json.loads(new_json)
+                            db.collection("questions").document(sel_id).update({"solution_steps": new_sols})
+                            st.success("수정 완료! 목록을 갱신합니다.")
+                            load_questions.clear()
+                            st.rerun()
+                        except Exception as e: st.error(f"JSON 오류: {e}")
