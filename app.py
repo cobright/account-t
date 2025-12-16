@@ -37,7 +37,7 @@ if "gemini" in st.secrets:
         pass
 
 # =========================================================
-# 2. Simulator Engine
+# 2. Simulator Engine (Entity 엔진 추가됨 ✨)
 # =========================================================
 class Simulators:
     @staticmethod
@@ -104,6 +104,24 @@ class Simulators:
         
         ending = (rem_base * base_price) + (rem_buy * buy_price)
         return cogs, ending, rem_base, rem_buy
+
+    # [NEW] Entity 엔진: 지분법 시뮬레이터
+    @staticmethod
+    def entity_equity(cost, share_rate, net_income, dividends):
+        # 지분법이익 = 자회사 순이익 * 지분율
+        equity_income = net_income * share_rate
+        # 배당금 수령 = 자회사 배당금 * 지분율 (장부금액 감소)
+        div_received = dividends * share_rate
+        
+        ending_bv = cost + equity_income - div_received
+        
+        data = [
+            {"구분": "1. 기초 취득원가", "금액": cost, "효과": "자산(+)"},
+            {"구분": "2. 지분법이익(NI)", "금액": equity_income, "효과": "자산 증가(↑)"},
+            {"구분": "3. 배당금수령(Div)", "금액": div_received, "효과": "자산 감소(↓)"},
+            {"구분": "4. 기말 장부금액", "금액": ending_bv, "효과": "최종 잔액"}
+        ]
+        return int(ending_bv), pd.DataFrame(data)
 
 # =========================================================
 # 3. Data Logic
@@ -252,9 +270,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     p, df = Simulators.bond_basic(face, crate, mrate, periods)
                     st.metric("PV", f"{p:,}원")
                     st.dataframe(df, use_container_width=True)
-            # (나머지 탭2 시뮬레이터 로직은 기존과 동일하므로 생략 - 이전 버전과 같음)
             elif "depreciation" in sim_type:
-                # ... (이전 코드 유지) ...
                 c1, c2 = st.columns([1, 2])
                 with c1:
                     cost = st.number_input("취득원가", value=defaults.get('cost', 1000000))
@@ -270,7 +286,6 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     st.line_chart(df["기말장부"].str.replace(",","").astype(int))
                     st.dataframe(df, use_container_width=True)
             elif "inventory" in sim_type:
-                # ... (이전 코드 유지) ...
                 c1, c2 = st.columns(2)
                 with c1:
                     bq, bp = st.number_input("기초수량", 100), st.number_input("기초단가", 100)
@@ -281,6 +296,21 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sq)
                     st.success(f"매출원가: {cogs:,}원")
                     st.info(f"기말재고: {end:,}원")
+            # [NEW] 지분법 시뮬레이터 UI 연결
+            elif "entity_equity" in sim_type:
+                c1, c2 = st.columns([1, 1.5])
+                with c1:
+                    cost = st.number_input("취득원가 (A)", value=defaults.get('cost', 1000000), step=10000)
+                    share = st.number_input("지분율 (%)", value=defaults.get('share', 0.2)*100) / 100
+                    net_income = st.number_input("피투자사 순이익", value=defaults.get('net_income', 500000), step=10000)
+                    divs = st.number_input("피투자사 배당총액", value=defaults.get('dividends', 100000), step=10000)
+                with c2:
+                    end_bv, df = Simulators.entity_equity(cost, share, net_income, divs)
+                    st.metric("기말 관계기업투자주식(장부)", f"{end_bv:,}원")
+                    
+                    # 시각화: 폭포수 차트처럼 표현
+                    st.bar_chart(df.set_index("구분")["금액"])
+                    st.dataframe(df, use_container_width=True)
             else:
                 st.info("이론 중심 챕터입니다.")
 
@@ -319,20 +349,15 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                             else: opts_list = opts
                             st.radio("정답", opts_list, label_visibility="collapsed")
                             
-                        # [🌟 핵심 기능 추가: 문제별 시뮬레이터]
+                        # [시뮬레이터 연동]
                         sim_config = q_data.get('sim_config')
                         if sim_config:
                             st.write("---")
-                            # Expander로 기본 숨김 처리 (스포일러 방지)
                             with st.expander(f"🧪 {sim_config.get('label', '시뮬레이터로 검증하기')}"):
                                 s_type = sim_config.get('type')
                                 p = sim_config.get('params', {})
                                 
                                 if s_type == "bond_basic":
-                                    # 파라미터가 있으면 그걸 쓰고, 없으면 기본값
-                                    # (여기서는 사용자 입력을 막고 읽기 전용으로 보여줄지, 수정 가능하게 할지 선택)
-                                    # -> 학습용이므로 값을 보여주되 수정은 불가능하게(read-only) 하거나, 
-                                    #    초기값만 세팅해주고 사용자가 조작하게 하는 것이 좋음. (여기선 후자)
                                     f_val = st.number_input("액면", value=p.get('face', 100000), key=f"s_{qid}_f")
                                     c_val = st.number_input("표시이자", value=p.get('crate', 0.05), format="%.2f", key=f"s_{qid}_c")
                                     m_val = st.number_input("유효이자", value=p.get('mrate', 0.08), format="%.2f", key=f"s_{qid}_m")
@@ -351,7 +376,6 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     st.dataframe(df, use_container_width=True)
                                     
                                 elif s_type == "inventory_fifo":
-                                    # 재고자산은 슬라이더로 판매량 조절해보게 함
                                     bq = p.get('base_qty', 100); bp = p.get('base_price', 100)
                                     buyq = p.get('buy_qty', 100); buyp = p.get('buy_price', 120)
                                     sell_q = st.slider("판매수량 시뮬레이션", 0, bq+buyq, p.get('sell_qty', 150), key=f"s_{qid}_sell")
@@ -359,6 +383,17 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sell_q)
                                     st.success(f"매출원가: {cogs:,}")
                                     st.info(f"기말재고: {end:,}")
+
+                                # [NEW] 지분법 시뮬레이터 연동
+                                elif s_type == "entity_equity":
+                                    c_cost = st.number_input("취득원가", value=p.get('cost', 1000000), key=f"s_{qid}_ec")
+                                    c_share = st.number_input("지분율", value=p.get('share', 0.2), key=f"s_{qid}_es")
+                                    c_ni = st.number_input("순이익", value=p.get('net_income', 0), key=f"s_{qid}_eni")
+                                    c_div = st.number_input("배당금", value=p.get('dividends', 0), key=f"s_{qid}_ediv")
+                                    
+                                    ebv, edf = Simulators.entity_equity(c_cost, c_share, c_ni, c_div)
+                                    st.metric("기말 장부금액", f"{ebv:,}")
+                                    st.bar_chart(edf.set_index("구분")["금액"])
 
                     with c_a:
                         with st.expander("💡 해설 보기"):
@@ -377,13 +412,13 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     st.warning("조건에 맞는 문제가 없습니다.")
 
 # ---------------------------------------------------------
-# [B] 관리자 모드 (Admin) - Grid Update
+# [B] 관리자 모드 (Admin)
 # ---------------------------------------------------------
 elif mode == "🛠️ 관리자 모드 (Admin)":
     st.header("🛠️ 통합 관리 센터")
     tab_course, tab_quest = st.tabs(["📚 커리큘럼 관리", "📥 문제/해설 통합 관리"])
     
-    # 1. 커리큘럼 (기존 코드 유지)
+    # 1. 커리큘럼
     with tab_course:
         st.markdown("#### 1️⃣ 등록된 코스 목록")
         if all_courses:
@@ -422,21 +457,17 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                 delete_document("courses", selected[0]['course_id'])
                 st.success("삭제 완료"); load_courses.clear(); st.rerun()
 
-    # 2. 문제/해설 통합 (복수 선택 & 일괄 삭제 적용)
+    # 2. 문제/해설 통합
     with tab_quest:
-        st.markdown("#### 2️⃣ 등록된 문제 목록 (필터링 강화)")
-        
+        st.markdown("#### 2️⃣ 등록된 문제 목록 (복수 선택/삭제)")
         if all_questions_raw:
             df_q = pd.DataFrame(all_questions_raw)
-            
-            # --- 방어 로직 ---
             if 'exam_info' not in df_q.columns: df_q['exam_info'] = None
             if 'tags' not in df_q.columns: df_q['tags'] = None
             if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
             if 'topic' not in df_q.columns: df_q['topic'] = '제목 없음'
             if 'sim_config' not in df_q.columns: df_q['sim_config'] = None
             
-            # --- Grid용 데이터 가공 ---
             df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
             df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
             df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
@@ -445,50 +476,30 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             
             df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol', 'has_sim']].copy()
             
-            # AgGrid 설정
             gb_q = GridOptionsBuilder.from_dataframe(df_grid)
-            # [수정 1] 복수 선택 허용 ('multiple')
             gb_q.configure_selection('multiple', use_checkbox=True)
             gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
-            
             gb_q.configure_column("question_id", width=100, pinned=True)
             gb_q.configure_column("topic", width=250)
             gb_q.configure_column("has_sim", header_name="Sim", width=50, cellStyle={'textAlign': 'center'})
             
             gridOpts_q = gb_q.build()
-            
-            # [수정 2] key 추가 (탭 튕김 방지)
-            grid_resp_q = AgGrid(
-                df_grid, 
-                gridOptions=gridOpts_q, 
-                update_mode=GridUpdateMode.SELECTION_CHANGED, 
-                fit_columns_on_grid_load=True, 
-                height=350,
-                key='admin_q_grid'  # 이 키가 있어야 탭이 유지됩니다!
-            )
+            grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350, key='admin_q_grid')
             
             sel_q = grid_resp_q['selected_rows']
             if isinstance(sel_q, pd.DataFrame): sel_q = sel_q.to_dict('records')
         else:
-            st.info("등록된 문제가 없습니다.")
-            sel_q = []
+            st.info("문제가 없습니다."); sel_q = []
             
         st.divider()
-        
         target_q_data = {}
         header_text_q = "🆕 신규 문제 등록"
-        
-        # [수정 3] 선택된 항목 처리 로직 개선
         if sel_q:
             count = len(sel_q)
-            # 복수 선택 시 첫 번째 아이템을 에디터에 표시 (수정/복제 용도)
             last_sel_id = sel_q[0]['question_id'] 
             target_q_data = next((q for q in all_questions_raw if q['question_id'] == last_sel_id), {})
-            
-            if count == 1:
-                header_text_q = f"✏️ 수정 모드: {last_sel_id}"
-            else:
-                header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
+            if count == 1: header_text_q = f"✏️ 수정 모드: {last_sel_id}"
+            else: header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
             
         st.subheader(header_text_q)
         default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
@@ -496,24 +507,17 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         
         qc1, qc2 = st.columns([1, 5])
         with qc1:
-            # 저장 버튼 (기존과 동일)
             if st.button("💾 문제 저장"):
                 try:
                     data = json.loads(q_json)
                     if not isinstance(data, list): data = [data]
-                    cnt = save_json_batch("questions", data, "question_id")
-                    st.success(f"{cnt}건 저장 완료")
-                    load_questions.clear()
-                    st.rerun()
+                    save_json_batch("questions", data, "question_id")
+                    st.success("저장 완료"); load_questions.clear(); st.rerun()
                 except Exception as e: st.error(e)
         with qc2:
-            # [수정 4] 일괄 삭제 버튼
-            if sel_q:
-                if st.button(f"🗑️ 선택된 {len(sel_q)}개 문제 삭제"):
-                    deleted_count = 0
-                    for row in sel_q:
-                        delete_document("questions", row['question_id'])
-                        deleted_count += 1
-                    st.success(f"{deleted_count}개 삭제 완료")
-                    load_questions.clear()
-                    st.rerun()
+            if sel_q and st.button(f"🗑️ 선택된 {len(sel_q)}개 문제 삭제"):
+                deleted_count = 0
+                for row in sel_q:
+                    delete_document("questions", row['question_id'])
+                    deleted_count += 1
+                st.success(f"{deleted_count}개 삭제 완료"); load_questions.clear(); st.rerun()
