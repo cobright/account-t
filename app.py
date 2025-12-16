@@ -235,9 +235,16 @@ with st.sidebar:
             except: y = 0
             if y > 2000: all_years.append(y)
             
-        min_year, max_year = 2010, 2025
+        min_year, max_year = 2010, 2025 # 기본값
+        
         if all_years:
             min_year, max_year = min(all_years), max(all_years)
+            
+        # [🚨 핵심 수정] 최소값과 최대값이 같으면 슬라이더가 에러를 뿜습니다.
+        # 데이터가 1개 연도만 있을 경우, 앞뒤로 1년씩 강제로 범위를 늘려줍니다.
+        if min_year == max_year:
+            min_year -= 1
+            max_year += 1
             
         sel_years = st.slider("연도 범위", min_year, max_year, (min_year, max_year))
         
