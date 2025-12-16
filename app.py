@@ -42,7 +42,10 @@ if "gemini" in st.secrets:
 # =========================================================
 class Simulators:
     @staticmethod
-    def bond_basic(face, crate, mrate, periods):
+    def bond_basic(face, crate, mrate, periods, redeem_stats=None):
+        """
+        redeem_stats = {'period': 2, 'amount': 98000} (선택사항)
+        """
         cash_flow = face * crate
         pv_principal = face / ((1 + mrate) ** periods)
         pv_interest = sum([cash_flow / ((1 + mrate) ** t) for t in range(1, periods + 1)])
@@ -52,11 +55,15 @@ class Simulators:
         book_value = price
         data.append({"기간": 0, "유효이자": "-", "표시이자": "-", "상각액": "-", "장부금액": f"{int(book_value):,}"})
         
+        # 상각표 작성
+        bv_dict = {0: book_value} # 기간별 장부금액 저장
+        
         for t in range(1, periods + 1):
             ie = book_value * mrate
             cp = face * crate
             am = ie - cp
             book_value += am
+            bv_dict[t] = book_value
             data.append({
                 "기간": t,
                 "유효이자": f"{int(ie):,}", "표시이자": f"{int(cp):,}",
@@ -65,12 +72,31 @@ class Simulators:
             
         # [Insight 생성]
         diff_type = "할인" if mrate > crate else ("할증" if mrate < crate else "액면")
+        
+        # (A) 기본 리포트
         insight = f"""
         **📊 분석 리포트**
         1. **발행 형태**: 시장이자율({mrate*100}%)이 표시이자율({crate*100}%)보다 {('높아' if mrate > crate else '낮아')} **{diff_type}발행**되었습니다.
         2. **장부금액 추세**: 만기({periods}년)로 갈수록 장부금액이 **{int(price):,}원**에서 **{int(face):,}원**을 향해 {('증가' if diff_type=='할인' else '감소')}합니다.
-        3. **총 이자비용**: {periods}년 간 인식할 총 이자비용은 **{int(periods * cash_flow + (face - price) if diff_type == '할인' else periods * cash_flow - (price - face)):,}원**입니다.
         """
+
+        # (B) 조기상환 리포트 (추가된 부분 ✨)
+        if redeem_stats:
+            r_period = redeem_stats['period']
+            r_amt = redeem_stats['amount']
+            r_bv = bv_dict.get(r_period, 0)
+            
+            gain_loss = r_bv - r_amt
+            gl_text = "상환이익(Gain)" if gain_loss >= 0 else "상환손실(Loss)"
+            
+            insight += f"""
+            ---
+            **💰 조기상환 손익 분석 ({r_period}년 말 상환 가정)**
+            1. **장부상 빚**: {r_period}년 말 시점의 장부금액은 **{int(r_bv):,}원**입니다.
+            2. **실제 갚은 돈**: **{int(r_amt):,}원**을 지급하고 빚을 청산했습니다.
+            3. **결론**: 장부보다 {('적게' if gain_loss > 0 else '많이')} 주었으므로, **{abs(int(gain_loss)):,}원의 {gl_text}**이 발생합니다.
+            """
+            
         return int(price), pd.DataFrame(data).set_index("기간"), insight
 
     @staticmethod
@@ -444,12 +470,26 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     c = st.number_input("표시율", value=defaults.get('crate',0.05))
                     m = st.number_input("시장율", value=defaults.get('mrate',0.08))
                     p = st.slider("기간", 1, 10, 3)
+                    
+                    # [NEW] 챕터 제목에 '조기상환'이 있으면 추가 옵션 표시 ✨
+                    redeem_stats = None
+                    if "조기상환" in current_ch['title']:
+                        st.markdown("---")
+                        st.caption("💰 조기상환 시뮬레이션")
+                        r_period = st.slider("상환 시점(연말)", 1, p, min(2, p))
+                        r_amt = st.number_input("상환 지급액", value=int(f * 0.98), step=1000)
+                        redeem_stats = {'period': r_period, 'amount': r_amt}
+                        
                 with c2:
-                    # [수정] 리턴값 3개 받음 (pv, df, insight)
-                    pv, df, insight = Simulators.bond_basic(f, c, m, p)
+                    # 함수에 redeem_stats 전달
+                    pv, df, insight = Simulators.bond_basic(f, c, m, p, redeem_stats)
                     st.metric("PV", f"{pv:,}")
                     st.dataframe(df, use_container_width=True)
-                    st.info(insight) # [추가] 해석 출력
+                    # 상환 분석 결과가 포함된 텍스트 출력
+                    if redeem_stats:
+                        st.success(insight) # 강조 효과
+                    else:
+                        st.info(insight)
 
             elif "entity_equity" in sim_type:
                 c1, c2 = st.columns([1,1.5])
