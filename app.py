@@ -359,11 +359,15 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                 theme='streamlit'
             )
             
-            # 4) 선택된 행 처리
+            # 4) 선택된 행 처리 (오류 수정됨 ✨)
             selected = grid_response['selected_rows']
+
+            # [핵심 수정] selected가 DataFrame일 경우 리스트로 변환
+            if isinstance(selected, pd.DataFrame):
+                selected = selected.to_dict('records')
+
+            # 이제 selected는 무조건 리스트이므로 안전함
             if selected:
-                # selected가 리스트 안에 딕셔너리 형태인지, DataFrame인지 버전에 따라 다를 수 있음
-                # 보통 리스트 형태임
                 sel_row = selected[0] 
                 sel_id = sel_row['question_id']
                 
@@ -371,25 +375,26 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                 st.markdown(f"### ✏️ 편집 모드: {sel_id}")
                 
                 # 원본 데이터 가져오기
-                target_q = next(q for q in all_qs if q['question_id'] == sel_id)
+                target_q = next((q for q in all_qs if q['question_id'] == sel_id), None)
                 
-                # 해설 데이터 추출
-                current_sols = target_q.get('solution_steps') or target_q.get('steps') or []
-                
-                # JSON 에디터
-                new_json = st.text_area(
-                    "해설 데이터 (JSON)", 
-                    value=json.dumps(current_sols, indent=2, ensure_ascii=False),
-                    height=300
-                )
-                
-                c_save, c_del = st.columns([1, 4])
-                with c_save:
-                    if st.button("💾 저장하기"):
-                        try:
-                            new_sols = json.loads(new_json)
-                            db.collection("questions").document(sel_id).update({"solution_steps": new_sols})
-                            st.success("수정 완료! 목록을 갱신합니다.")
-                            load_questions.clear()
-                            st.rerun()
-                        except Exception as e: st.error(f"JSON 오류: {e}")
+                if target_q:
+                    # 해설 데이터 추출
+                    current_sols = target_q.get('solution_steps') or target_q.get('steps') or []
+                    
+                    # JSON 에디터
+                    new_json = st.text_area(
+                        "해설 데이터 (JSON)", 
+                        value=json.dumps(current_sols, indent=2, ensure_ascii=False),
+                        height=300
+                    )
+                    
+                    c_save, c_del = st.columns([1, 4])
+                    with c_save:
+                        if st.button("💾 저장하기"):
+                            try:
+                                new_sols = json.loads(new_json)
+                                db.collection("questions").document(sel_id).update({"solution_steps": new_sols})
+                                st.success("수정 완료! 목록을 갱신합니다.")
+                                load_questions.clear() # 캐시 삭제
+                                st.rerun()
+                            except Exception as e: st.error(f"JSON 오류: {e}")
