@@ -427,74 +427,235 @@ if mode == "👨‍🎓 학습 모드 (Student)":
             else: st.info("이론 중심 챕터입니다.")
 
         # --- [Tab 3] 기출문제 (기존 유지) ---
+        # --- [Tab 3] 기출문제 (기능 완전 복원) ---
         with tab3:
             kws = current_ch.get('related_keywords', [])
             if kws:
                 student_filters['keywords'] = kws
                 matched = advanced_filter_questions(all_questions_raw, student_filters)
+                
                 if matched:
-                    st.success(f"🔍 {len(matched)}개 문제 발견")
-                    q_opts = {q['question_id']: f"[{q.get('exam_info',{}).get('year','-')}] {q['topic']}" for q in matched}
+                    st.success(f"🔍 조건에 맞는 문제 {len(matched)}개를 찾았습니다.")
+                    
+                    # 문제 선택 박스
+                    q_opts = {}
+                    for q in matched:
+                        year = q.get('exam_info', {}).get('year', '-')
+                        etype = q.get('exam_info', {}).get('type', '')
+                        q_opts[q['question_id']] = f"[{year} {etype}] {q['topic']}"
+                        
                     qid = st.selectbox("문제 선택", list(q_opts.keys()), format_func=lambda x: q_opts[x])
                     q_data = next(q for q in matched if q['question_id'] == qid)
+                    
                     st.divider()
                     
+                    # 태그 표시
+                    tags = q_data.get('tags', [])
+                    if tags: st.caption("Tags: " + " ".join([f"`#{t}`" for t in tags]))
+                    
                     c_q, c_a = st.columns([1.5, 1])
+                    
+                    # [왼쪽 컬럼] 문제 지문 & 시뮬레이터
                     with c_q:
                         st.markdown(f"**Q. {q_data['topic']}**")
                         st.markdown(q_data['content_markdown'])
+                        
                         opts = q_data.get('choices')
                         if opts:
                             if isinstance(opts, dict): opts = [f"{k}. {v}" for k,v in sorted(opts.items())]
                             st.radio("정답", opts, label_visibility="collapsed")
-                        
-                        sim = q_data.get('sim_config')
-                        if sim:
+                            
+                        # ⚡️ [복원됨] 문제별 맞춤 시뮬레이터
+                        sim_config = q_data.get('sim_config')
+                        if sim_config:
                             st.write("---")
-                            with st.expander(f"🧪 {sim.get('label', '시뮬레이터')}"):
-                                st.info("시뮬레이터가 여기에 표시됩니다 (Tab2 로직 참조)")
-                                # (공간 절약을 위해 상세 구현 생략, 위 Simulators 클래스 사용)
+                            with st.expander(f"🧪 {sim_config.get('label', '시뮬레이터로 검증하기')}"):
+                                s_type = sim_config.get('type')
+                                p = sim_config.get('params', {})
+                                
+                                # 1. 사채/리스 (PV)
+                                if s_type == "bond_basic":
+                                    f_val = st.number_input("액면", value=p.get('face', 100000), key=f"s_{qid}_f")
+                                    c_val = st.number_input("표시이자", value=p.get('crate', 0.05), format="%.2f", key=f"s_{qid}_c")
+                                    m_val = st.number_input("유효이자", value=p.get('mrate', 0.08), format="%.2f", key=f"s_{qid}_m")
+                                    
+                                    res_p, res_df = Simulators.bond_basic(f_val, c_val, m_val, p.get('periods', 3))
+                                    st.dataframe(res_df, use_container_width=True)
+                                    
+                                # 2. 감가상각 (Allocation)
+                                elif s_type == "depreciation":
+                                    c_val = st.number_input("취득원가", value=p.get('cost', 1000), key=f"s_{qid}_cost")
+                                    r_val = st.number_input("잔존가치", value=p.get('residual', 0), key=f"s_{qid}_res")
+                                    l_val = st.number_input("내용연수", value=p.get('life', 5), key=f"s_{qid}_life")
+                                    rate_val = p.get('rate')
+                                    method_val = p.get('method', 'SL')
+                                    
+                                    df = Simulators.depreciation(c_val, r_val, l_val, method_val, rate_val)
+                                    st.line_chart(df['기말장부'].str.replace(",","").astype(int))
+                                    st.dataframe(df, use_container_width=True)
+                                    
+                                # 3. 재고자산 (Flow)
+                                elif s_type == "inventory_fifo":
+                                    bq = p.get('base_qty', 100); bp = p.get('base_price', 100)
+                                    buyq = p.get('buy_qty', 100); buyp = p.get('buy_price', 120)
+                                    sell_q = st.slider("판매수량 시뮬레이션", 0, bq+buyq, p.get('sell_qty', 150), key=f"s_{qid}_sell")
+                                    
+                                    cogs, end, r1, r2 = Simulators.inventory_fifo(bq, bp, buyq, buyp, sell_q)
+                                    st.success(f"매출원가: {cogs:,}")
+                                    st.info(f"기말재고: {end:,}")
 
+                                # 4. 지분법 (Entity)
+                                elif s_type == "entity_equity":
+                                    c_cost = st.number_input("취득원가", value=p.get('cost', 1000000), key=f"s_{qid}_ec")
+                                    c_share = st.number_input("지분율", value=p.get('share', 0.2), key=f"s_{qid}_es")
+                                    c_ni = st.number_input("순이익", value=p.get('net_income', 0), key=f"s_{qid}_eni")
+                                    c_div = st.number_input("배당금", value=p.get('dividends', 0), key=f"s_{qid}_ediv")
+                                    
+                                    ebv, edf = Simulators.entity_equity(c_cost, c_share, c_ni, c_div)
+                                    st.metric("기말 장부금액", f"{ebv:,}")
+                                    st.bar_chart(edf.set_index("구분")["금액"])
+
+                    # [오른쪽 컬럼] 정답 & 해설 & AI 요청
                     with c_a:
-                        with st.expander("💡 해설"):
+                        with st.expander("💡 해설 보기", expanded=True):
                             st.info(f"정답: {q_data.get('answer', '?')}")
                             sols = q_data.get('solution_steps') or q_data.get('steps')
+                            
                             if sols:
-                                for s in sols: st.markdown(f"**{s.get('title','')}**\n{s.get('content','')}\n---")
-                            else: st.warning("해설 없음")
-                else: st.warning("문제 없음")
-            else: st.info("키워드 없음")
+                                for s in sols:
+                                    st.markdown(f"**{s.get('title','Step')}**")
+                                    st.caption(s.get('content',''))
+                                    st.divider()
+                            else:
+                                st.warning("등록된 해설이 없습니다.")
+                                # ⚡️ [복원됨] AI 해설 요청 버튼
+                                if GEMINI_AVAILABLE:
+                                    if st.button("🤖 AI 해설 요청하기", key=f"ai_btn_{qid}"):
+                                        with st.spinner("AI 선생님이 해설을 작성 중입니다..."):
+                                            # 실제 Gemini 호출 로직 (간소화된 예시)
+                                            # 실제로는 model.generate_content() 등을 호출해야 함
+                                            prompt = f"문제: {q_data['content_markdown']}\n이 문제에 대한 상세한 단계별 해설을 작성해줘."
+                                            try:
+                                                model = genai.GenerativeModel("gemini-pro")
+                                                response = model.generate_content(prompt)
+                                                st.markdown("### 🤖 AI 해설")
+                                                st.markdown(response.text)
+                                            except Exception as e:
+                                                st.error(f"AI 호출 실패: {e}")
+                                else:
+                                    st.caption("AI 해설 기능을 사용하려면 API 키 설정이 필요합니다.")
+                else:
+                    st.warning("조건에 맞는 문제가 없습니다.")
+            else:
+                st.info("이 챕터에는 연결된 태그(Keywords)가 없습니다.")
 
 # ---------------------------------------------------------
-# [B] 관리자 모드 (기존 v7.0 Grid 유지)
+# [B] 관리자 모드 (Admin)
 # ---------------------------------------------------------
 elif mode == "🛠️ 관리자 모드 (Admin)":
     st.header("🛠️ 통합 관리 센터")
-    t1, t2 = st.tabs(["📚 커리큘럼", "📥 문제/해설"])
+    tab_course, tab_quest = st.tabs(["📚 커리큘럼 관리", "📥 문제/해설 통합 관리"])
     
-    with t1:
-        courses = load_courses()
-        if courses:
-            df = pd.DataFrame(courses)
-            gb = GridOptionsBuilder.from_dataframe(df[['course_id', 'title', 'engine_type']])
+    # 1. 커리큘럼
+    with tab_course:
+        st.markdown("#### 1️⃣ 등록된 코스 목록")
+        if all_courses:
+            df_c = pd.DataFrame(all_courses)
+            df_view = df_c[['course_id', 'engine_type', 'title']].copy()
+            df_view['chapters_count'] = df_c['chapters'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+            gb = GridOptionsBuilder.from_dataframe(df_view)
             gb.configure_selection('single', use_checkbox=True)
-            grid = AgGrid(df[['course_id', 'title', 'engine_type']], gridOptions=gb.build(), update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=200)
-            sel = grid['selected_rows']
-            if isinstance(sel, pd.DataFrame): sel = sel.to_dict('records')
-        else: sel = []
-        
-        target = next((c for c in courses if c['course_id'] == sel[0]['course_id']), {}) if sel else {}
-        txt = st.text_area("JSON", value=json.dumps(target, indent=2, ensure_ascii=False) if target else "", height=300)
-        if st.button("저장", key="save_c"):
-            save_json_batch("courses", [json.loads(txt)], "course_id")
-            st.success("저장됨"); load_courses.clear(); st.rerun()
+            gb.configure_column("course_id", width=100); gb.configure_column("title", width=300)
+            grid_resp = AgGrid(df_view, gridOptions=gb.build(), update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=200)
+            selected = grid_resp['selected_rows']
+            if isinstance(selected, pd.DataFrame): selected = selected.to_dict('records')
+        else: selected = []
 
-    with t2:
-        qs = all_questions_raw
-        if qs:
-            dfq = pd.DataFrame(qs)
-            # (Grid 표시 로직 생략 - v7.0과 동일하게 구현됨)
-            # ...
-            st.info("관리자 Grid 기능은 v7.0 코드와 동일하게 유지됩니다.")
+        st.divider()
+        edit_target = {}
+        header_text = "🆕 신규 커리큘럼 등록"
+        if selected:
+            edit_target = next(c for c in all_courses if c['course_id'] == selected[0]['course_id'])
+            header_text = f"✏️ 수정 모드: {edit_target['course_id']}"
+            
+        st.subheader(header_text)
+        default_val = json.dumps(edit_target, indent=2, ensure_ascii=False) if edit_target else ""
+        c_json = st.text_area("Course JSON", value=default_val, height=300)
+        c1, c2 = st.columns([1, 5])
+        with c1:
+            if st.button("💾 저장"):
+                try:
+                    data = json.loads(c_json)
+                    if not isinstance(data, list): data = [data]
+                    save_json_batch("courses", data, "course_id")
+                    st.success("저장 완료"); load_courses.clear(); st.rerun()
+                except Exception as e: st.error(e)
+        with c2:
+            if selected and st.button("🗑️ 삭제"):
+                delete_document("courses", selected[0]['course_id'])
+                st.success("삭제 완료"); load_courses.clear(); st.rerun()
+
+    # 2. 문제/해설 통합
+    with tab_quest:
+        st.markdown("#### 2️⃣ 등록된 문제 목록 (복수 선택/삭제)")
+        if all_questions_raw:
+            df_q = pd.DataFrame(all_questions_raw)
+            if 'exam_info' not in df_q.columns: df_q['exam_info'] = None
+            if 'tags' not in df_q.columns: df_q['tags'] = None
+            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
+            if 'topic' not in df_q.columns: df_q['topic'] = '제목 없음'
+            if 'sim_config' not in df_q.columns: df_q['sim_config'] = None
+            
+            df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
+            df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
+            df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+            df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
+            df_q['has_sim'] = df_q.apply(lambda r: "⚡" if r.get('sim_config') else "-", axis=1)
+            
+            df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol', 'has_sim']].copy()
+            
+            gb_q = GridOptionsBuilder.from_dataframe(df_grid)
+            gb_q.configure_selection('multiple', use_checkbox=True)
+            gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
+            gb_q.configure_column("question_id", width=100, pinned=True)
+            gb_q.configure_column("topic", width=250)
+            gb_q.configure_column("has_sim", header_name="Sim", width=50, cellStyle={'textAlign': 'center'})
+            
+            gridOpts_q = gb_q.build()
+            grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350, key='admin_q_grid')
+            
+            sel_q = grid_resp_q['selected_rows']
+            if isinstance(sel_q, pd.DataFrame): sel_q = sel_q.to_dict('records')
+        else:
+            st.info("문제가 없습니다."); sel_q = []
+            
+        st.divider()
+        target_q_data = {}
+        header_text_q = "🆕 신규 문제 등록"
+        if sel_q:
+            count = len(sel_q)
+            last_sel_id = sel_q[0]['question_id'] 
+            target_q_data = next((q for q in all_questions_raw if q['question_id'] == last_sel_id), {})
+            if count == 1: header_text_q = f"✏️ 수정 모드: {last_sel_id}"
+            else: header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
+            
+        st.subheader(header_text_q)
+        default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
+        q_json = st.text_area("Question JSON", value=default_val_q, height=400)
         
-        # (관리자 기능은 v7.0 코드의 하단부를 그대로 사용하시면 됩니다. 분량상 생략하였으나 기능은 유지됩니다.)
+        qc1, qc2 = st.columns([1, 5])
+        with qc1:
+            if st.button("💾 문제 저장"):
+                try:
+                    data = json.loads(q_json)
+                    if not isinstance(data, list): data = [data]
+                    save_json_batch("questions", data, "question_id")
+                    st.success("저장 완료"); load_questions.clear(); st.rerun()
+                except Exception as e: st.error(e)
+        with qc2:
+            if sel_q and st.button(f"🗑️ 선택된 {len(sel_q)}개 문제 삭제"):
+                deleted_count = 0
+                for row in sel_q:
+                    delete_document("questions", row['question_id'])
+                    deleted_count += 1
+                st.success(f"{deleted_count}개 삭제 완료"); load_questions.clear(); st.rerun()
