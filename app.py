@@ -533,7 +533,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                                     if st.button("🤖 AI 해설 요청 및 저장", key=f"ai_btn_{qid}"):
                                         with st.spinner("AI가 해설을 작성하고 DB에 저장 중입니다..."):
                                             try:
-                                                model = genai.GenerativeModel("gemini-pro")
+                                                model = genai.GenerativeModel("gemini-2.5-flash")
                                                 # 구조화된 답변을 유도하는 프롬프트
                                                 prompt = f"""
                                                 문제: {q_data['content_markdown']}
