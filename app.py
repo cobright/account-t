@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 import json
@@ -965,7 +966,6 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
 
                 # 3. 마무리 (캐시 초기화 및 새로고침)
                 load_questions.clear()
-                time.sleep(1.0)
                 st.rerun()
 
             except json.JSONDecodeError:
