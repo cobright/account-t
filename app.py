@@ -897,16 +897,6 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             q_json = st.text_area("Master JSON", value=default_val_q, height=300)
 
         # 2. [NEW] 해설 전용 입력창 (편의 기능) ✨
-        st.markdown("#### 💡 해설(Solution) 관리")
-        st.caption("AI 튜터 프롬프트가 만든 JSON을 여기에 붙여넣으세요. 위 마스터 JSON에 자동으로 합쳐집니다.")
-        
-        # 기존 해설이 있으면 가져오기
-        current_sol = target_q_data.get('solution_steps', [])
-        default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
-        
-        sol_json = st.text_area("Solution JSON Steps", value=default_sol, height=200)
-
-        qc1, qc2 = st.columns([1, 5])
         with qc1:
 
             # [수정] 해설 전용 입력창 및 스마트 저장 로직
