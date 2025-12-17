@@ -908,29 +908,77 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
 
         qc1, qc2 = st.columns([1, 5])
         with qc1:
-            if st.button("💾 통합 저장"):
-                try:
-                    # 1. 마스터 JSON 파싱
-                    if q_json.strip():
-                        main_data = json.loads(q_json)
-                    else:
-                        main_data = {}
 
-                    # 2. 해설 JSON 파싱 및 병합 (Overwriting)
-                    if sol_json.strip():
-                        sol_data = json.loads(sol_json)
-                        # 리스트 형태인지 확인
-                        if isinstance(sol_data, list):
-                            main_data['solution_steps'] = sol_data
+            # [수정] 해설 전용 입력창 및 스마트 저장 로직
+            st.markdown("#### 💡 스마트 해설(Solution) 등록기")
+            st.caption("AI 프롬프트 결과(JSON List)를 여기에 붙여넣으세요. ID가 포함되어 있으면 알아서 제자리를 찾아갑니다.")
+            
+            # 현재 선택된 문제의 기존 해설을 기본값으로 표시 (없으면 빈칸)
+            current_sol = target_q_data.get('solution_steps', [])
+            default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
+            
+            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=300)
+
+            if st.button("💾 해설 데이터 저장 (Smart Save)"):
+                try:
+                    if not sol_json_input.strip():
+                        st.warning("입력된 데이터가 없습니다.")
+                        st.stop()
+
+                    input_data = json.loads(sol_json_input)
+
+                    # 데이터 유효성 검사: 리스트여야 함
+                    if not isinstance(input_data, list):
+                        input_data = [input_data] # 리스트가 아니면 리스트로 감쌈
+
+                    if not input_data:
+                        st.warning("빈 리스트입니다.")
+                        st.stop()
+
+                    # --- [판단 로직] 이것이 '배치 파일'인가? '단일 해설'인가? ---
+                    first_item = input_data[0]
+                    success_count = 0
+                    
+                    # Case A: 배치 모드 (JSON 안에 'question_id'가 있는 경우)
+                    # 예: [{"question_id": "Q41", "solution_steps": [...]}, {"question_id": "Q42", ...}]
+                    if "question_id" in first_item and "solution_steps" in first_item:
+                        progress_bar = st.progress(0)
+                        for i, item in enumerate(input_data):
+                            target_id = item.get("question_id")
+                            new_steps = item.get("solution_steps")
+                            
+                            if target_id and new_steps:
+                                # 해당 ID를 가진 문서를 찾아 업데이트
+                                db.collection("questions").document(str(target_id)).update({
+                                    "solution_steps": new_steps
+                                })
+                                success_count += 1
+                            progress_bar.progress((i + 1) / len(input_data))
+                        
+                        st.success(f"총 {success_count}개의 문제에 해설을 배포(Update)했습니다!")
+                    
+                    # Case B: 단일 모드 (JSON이 바로 해설 단계들인 경우)
+                    # 예: [{"title": "Step 1", "content": "..."}, {"title": "Step 2", ...}]
+                    elif "title" in first_item and "content" in first_item:
+                        # 이때는 Grid에서 '선택된 문제(target_q_data)'에만 저장해야 함
+                        if target_q_data:
+                            target_id = target_q_data['question_id']
+                            db.collection("questions").document(str(target_id)).update({
+                                "solution_steps": input_data
+                            })
+                            st.success(f"ID: {target_id} 문제의 해설을 업데이트했습니다.")
                         else:
-                            st.warning("해설 데이터는 리스트 형식([...])이어야 합니다.")
+                            st.error("단일 해설 모드입니다. 먼저 왼쪽 표에서 해설을 넣을 문제를 선택해주세요.")
                     
-                    # 3. 저장 실행
-                    if not isinstance(main_data, list): main_data = [main_data]
-                    save_json_batch("questions", main_data, "question_id")
-                    
-                    st.success("저장 완료! (해설이 병합되었습니다)")
+                    else:
+                        st.error("알 수 없는 JSON 형식입니다. 'question_id'가 포함된 객체 리스트이거나, 'title/content'가 포함된 해설 리스트여야 합니다.")
+
+                    # 캐시 초기화 및 새로고침
                     load_questions.clear()
+                    time.sleep(1.5) # 메시지 읽을 시간 줌
                     st.rerun()
+
+                except json.JSONDecodeError:
+                    st.error("JSON 형식이 올바르지 않습니다. 따옴표나 콤마를 확인해주세요.")
                 except Exception as e:
-                    st.error(f"JSON 오류: {e}")
+                    st.error(f"저장 중 오류 발생: {e}")
