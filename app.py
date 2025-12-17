@@ -845,130 +845,140 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
 
     # 2. 문제/해설 통합
     with tab_quest:
-        st.markdown("#### 2️⃣ 등록된 문제 목록 (복수 선택/삭제)")
-        if all_questions_raw:
-            df_q = pd.DataFrame(all_questions_raw)
-            if 'exam_info' not in df_q.columns: df_q['exam_info'] = None
-            if 'tags' not in df_q.columns: df_q['tags'] = None
-            if 'engine_type' not in df_q.columns: df_q['engine_type'] = '-'
-            if 'topic' not in df_q.columns: df_q['topic'] = '제목 없음'
-            if 'sim_config' not in df_q.columns: df_q['sim_config'] = None
-            
-            df_q['year'] = df_q['exam_info'].apply(lambda x: x.get('year', 0) if isinstance(x, dict) else 0)
-            df_q['exam'] = df_q['exam_info'].apply(lambda x: x.get('type', '-') if isinstance(x, dict) else '-')
-            df_q['tags_str'] = df_q['tags'].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
-            df_q['has_sol'] = df_q.apply(lambda r: "O" if (r.get('solution_steps') or r.get('steps')) else "X", axis=1)
-            df_q['has_sim'] = df_q.apply(lambda r: "⚡" if r.get('sim_config') else "-", axis=1)
-            
-            df_grid = df_q[['question_id', 'year', 'exam', 'engine_type', 'topic', 'tags_str', 'has_sol', 'has_sim']].copy()
-            
-            gb_q = GridOptionsBuilder.from_dataframe(df_grid)
-            gb_q.configure_selection('multiple', use_checkbox=True)
-            gb_q.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
-            gb_q.configure_column("question_id", width=100, pinned=True)
-            gb_q.configure_column("topic", width=250)
-            gb_q.configure_column("has_sim", header_name="Sim", width=50, cellStyle={'textAlign': 'center'})
-            
-            gridOpts_q = gb_q.build()
-            grid_resp_q = AgGrid(df_grid, gridOptions=gridOpts_q, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True, height=350, key='admin_q_grid')
-            
-            sel_q = grid_resp_q['selected_rows']
-            if isinstance(sel_q, pd.DataFrame): sel_q = sel_q.to_dict('records')
-        else:
-            st.info("문제가 없습니다."); sel_q = []
-            
+        st.header("🗂️ 문제 및 해설 데이터베이스 관리")
+
+        # 1. DB에서 데이터 로드
+        db_questions = load_questions()
+        
+        # 2. Grid 구성 (문제 목록 표시)
+        gb = GridOptionsBuilder.from_dataframe(pd.DataFrame(db_questions))
+        gb.configure_selection('single', use_checkbox=True)
+        gb.configure_column("content_markdown", header_name="내용(요약)", width=300)
+        gb.configure_column("solution_steps", header_name="해설유무", width=100) # 해설 있는지 확인용
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
+        gridOptions = gb.build()
+        
+        st.markdown("### 1️⃣ 등록된 문제 목록 (선택하여 수정)")
+        grid_response = AgGrid(
+            pd.DataFrame(db_questions),
+            gridOptions=gridOptions,
+            data_return_mode='AS_INPUT', 
+            update_mode='MODEL_CHANGED',
+            fit_columns_on_grid_load=False,
+            height=300,
+            theme='streamlit'
+        )
+
+        selected = grid_response['selected_rows']
+        target_q_data = selected[0] if selected else None
+        
         st.divider()
-        target_q_data = {}
-        header_text_q = "🆕 신규 문제 등록"
-        if sel_q:
-            count = len(sel_q)
-            last_sel_id = sel_q[0]['question_id'] 
-            target_q_data = next((q for q in all_questions_raw if q['question_id'] == last_sel_id), {})
-            if count == 1: header_text_q = f"✏️ 수정 모드: {last_sel_id}"
-            else: header_text_q = f"✅ {count}개 선택됨 (편집은 첫 번째 항목 기준)"
+
+        # 화면 분할: 왼쪽(Master Data), 오른쪽(Solution Data)
+        col_master, col_solution = st.columns([1, 1])
+
+        # ---------------------------------------------------------
+        # [섹션 A] Master JSON 관리 (신규 등록 및 전체 수정)
+        # ---------------------------------------------------------
+        with col_master:
+            st.subheader("📝 문제 등록 / 수정 (Master JSON)")
+            st.caption("새로운 문제를 등록하거나, 문제의 지문/보기/정답을 수정합니다.")
             
-        st.subheader(header_text_q)
-        
-        # 1. 메인 데이터 (문제 정보)
-        # 해설(solution_steps)은 여기서 제외하고 보여줄 수도 있지만, 
-        # 일단 전체를 다루는 마스터 JSON 창은 유지합니다.
-        default_val_q = json.dumps(target_q_data, indent=2, ensure_ascii=False) if target_q_data else ""
-        
-        with st.expander("📝 전체 JSON 데이터 (고급 사용자용)", expanded=False):
-            q_json = st.text_area("Master JSON", value=default_val_q, height=300)
+            # 선택된 문제 데이터가 있으면 불러오고, 없으면 빈 템플릿
+            if target_q_data:
+                # DB에서 가져온 데이터에는 '_id' 같은 내부 필드가 있을 수 있으므로 정리
+                safe_data = {k:v for k,v in target_q_data.items() if k != '_id'}
+                default_val_q = json.dumps(safe_data, indent=2, ensure_ascii=False)
+                btn_label = "💾 기존 문제 수정 (Update)"
+            else:
+                # 신규 등록용 템플릿
+                new_template = {
+                    "question_id": "2024_NEW_01",
+                    "topic": "주제 입력",
+                    "engine_type": "General",
+                    "exam_info": {"type": "CPA", "year": 2024},
+                    "content_markdown": "문제 지문 입력...",
+                    "choices": {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"},
+                    "answer": 1,
+                    "sim_config": None
+                }
+                default_val_q = json.dumps(new_template, indent=2, ensure_ascii=False)
+                btn_label = "🆕 신규 문제 등록 (Create)"
 
-        # 2. [NEW] 스마트 해설(Solution) 관리 ✨
-        st.markdown("#### 💡 스마트 해설(Solution) 등록기")
-        st.caption("AI 프롬프트 결과(JSON List)를 여기에 붙여넣으세요. ID가 포함되어 있으면 알아서 제자리를 찾아갑니다.")
-        
-        # 현재 선택된 문제의 기존 해설을 기본값으로 표시 (없으면 빈칸)
-        current_sol = target_q_data.get('solution_steps', [])
-        default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
-        
-        # 텍스트 입력창 (넓게 사용)
-        sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=300)
+            q_json_input = st.text_area("Master JSON Input", value=default_val_q, height=400, key="master_json_area")
 
-        # 저장 버튼 및 로직 처리
-        if st.button("💾 해설 데이터 저장 (Smart Save)"):
-            try:
-                # 1. 입력값 검증
-                if not sol_json_input.strip():
-                    st.warning("입력된 데이터가 없습니다.")
-                    st.stop()
-
-                input_data = json.loads(sol_json_input)
-
-                # 리스트가 아니면 리스트로 감쌈 (단일 객체 입력 방지)
-                if not isinstance(input_data, list):
-                    input_data = [input_data]
-
-                if not input_data:
-                    st.warning("빈 리스트입니다.")
-                    st.stop()
-
-                # 2. 스마트 판단 로직 (배치 vs 단일)
-                first_item = input_data[0]
-                success_count = 0
-
-                # Case A: 배치 모드 (JSON 안에 'question_id'가 있는 경우)
-                # 예: [{"question_id": "Q41", "solution_steps": [...]}, {"question_id": "Q42", ...}]
-                if "question_id" in first_item and "solution_steps" in first_item:
-                    progress_bar = st.progress(0)
-                    for i, item in enumerate(input_data):
-                        target_id = item.get("question_id")
-                        new_steps = item.get("solution_steps")
-                        
-                        if target_id and new_steps:
-                            # 해당 ID를 가진 문서를 찾아 업데이트
-                            db.collection("questions").document(str(target_id)).update({
-                                "solution_steps": new_steps
-                            })
-                            success_count += 1
-                        progress_bar.progress((i + 1) / len(input_data))
+            if st.button(btn_label, key="btn_master_save"):
+                try:
+                    save_data = json.loads(q_json_input)
                     
-                    st.success(f"총 {success_count}개의 문제에 해설을 배포(Update)했습니다!")
-
-                # Case B: 단일 모드 (JSON이 바로 해설 단계들인 경우)
-                # 예: [{"title": "Step 1", "content": "..."}, {"title": "Step 2", ...}]
-                elif "title" in first_item and "content" in first_item:
-                    # 이때는 Grid에서 '선택된 문제(target_q_data)'에만 저장해야 함
-                    if target_q_data:
-                        target_id = target_q_data['question_id']
-                        db.collection("questions").document(str(target_id)).update({
-                            "solution_steps": input_data
-                        })
-                        st.success(f"ID: {target_id} 문제의 해설을 업데이트했습니다.")
+                    # 배치 등록(리스트) 지원
+                    if isinstance(save_data, list):
+                        data_list = save_data
                     else:
-                        st.error("단일 해설 모드입니다. 먼저 왼쪽 표에서 해설을 넣을 문제를 선택해주세요.")
-                
-                else:
-                    st.error("알 수 없는 JSON 형식입니다. 'question_id'가 포함된 객체 리스트(배치)이거나, 'title/content'가 포함된 해설 리스트(단일)여야 합니다.")
+                        data_list = [save_data]
+                    
+                    # 저장 함수 호출 (save_json_batch는 app.py 상단에 정의되어 있어야 함)
+                    save_json_batch("questions", data_list, "question_id")
+                    
+                    st.success(f"저장 완료! ({len(data_list)}건)")
+                    load_questions.clear()
+                    time.sleep(1.0)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
-                # 3. 마무리 (캐시 초기화 및 새로고침)
-                load_questions.clear()
-                st.rerun()
+        # ---------------------------------------------------------
+        # [섹션 B] 스마트 해설 관리 (Solution Only)
+        # ---------------------------------------------------------
+        with col_solution:
+            st.subheader("💡 해설(Solution) 전용 관리")
+            st.caption("AI 프롬프트 결과(JSON)를 여기에 붙여넣으세요. ID가 있으면 찾아갑니다.")
+            
+            # 현재 선택된 문제의 해설만 따로 보여주기
+            current_sol = target_q_data.get('solution_steps', []) if target_q_data else []
+            default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
+            
+            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=400, key="sol_json_area")
 
-            except json.JSONDecodeError:
-                st.error("JSON 형식이 올바르지 않습니다. 따옴표나 콤마를 확인해주세요.")
-            except Exception as e:
-                st.error(f"저장 중 오류 발생: {e}")
+            if st.button("💾 해설만 저장 (Smart Save)", key="btn_sol_save"):
+                try:
+                    if not sol_json_input.strip():
+                        st.warning("내용이 없습니다.")
+                        st.stop()
+
+                    input_data = json.loads(sol_json_input)
+                    if not isinstance(input_data, list):
+                        input_data = [input_data]
+
+                    first_item = input_data[0]
+                    success_count = 0
+
+                    # Case A: 배치 모드 (ID 포함)
+                    if "question_id" in first_item and "solution_steps" in first_item:
+                        progress_bar = st.progress(0)
+                        for i, item in enumerate(input_data):
+                            t_id = item.get("question_id")
+                            t_steps = item.get("solution_steps")
+                            if t_id and t_steps:
+                                db.collection("questions").document(str(t_id)).update({"solution_steps": t_steps})
+                                success_count += 1
+                            progress_bar.progress((i + 1) / len(input_data))
+                        st.success(f"총 {success_count}건의 해설 업데이트 완료!")
+
+                    # Case B: 단일 모드 (ID 미포함 -> 현재 선택된 문제에 저장)
+                    elif "title" in first_item and "content" in first_item:
+                        if target_q_data:
+                            t_id = target_q_data['question_id']
+                            db.collection("questions").document(str(t_id)).update({"solution_steps": input_data})
+                            st.success(f"[{t_id}] 문제에 해설을 저장했습니다.")
+                        else:
+                            st.error("⚠️ 왼쪽 목록에서 해설을 추가할 문제를 먼저 선택해주세요.")
+                    else:
+                        st.error("형식이 올바르지 않습니다.")
+
+                    load_questions.clear()
+                    time.sleep(1.0)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"오류: {e}")
