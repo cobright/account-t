@@ -866,6 +866,22 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                     lambda x: ", ".join(x) if isinstance(x, list) else str(x)
                 )
 
+            # (3) 해설 유무 변환 ("O" / "X")
+            if 'solution_steps' in df.columns:
+                df['sol_check'] = df['solution_steps'].apply(
+                    lambda x: "O" if isinstance(x, list) and len(x) > 0 else "X"
+                )
+            else:
+                df['sol_check'] = "X"
+
+            # (4) 시뮬레이터 설정 변환 (Type 표시, 예: "inventory_fifo") ✨
+            if 'sim_config' in df.columns:
+                df['sim_type_str'] = df['sim_config'].apply(
+                    lambda x: x.get('type', 'Custom') if isinstance(x, dict) else "-"
+                )
+            else:
+                df['sim_type_str'] = "-"
+
             # (3) Choices: 딕셔너리를 문자열로 변환 (너무 길면 잘릴 수 있음)
             if 'choices' in df.columns:
                 df['choices_str'] = df['choices'].apply(
@@ -878,19 +894,23 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_selection('single', use_checkbox=True)
         
-        # [NEW] 컬럼 설정 (가공된 컬럼을 보여줌)
+        # [NEW] 컬럼 설정 (사용자 친화적 표시)
         gb.configure_column("question_id", header_name="ID", width=120, pinned="left")
-        gb.configure_column("exam_info_str", header_name="출제정보", width=100) # 가공된 컬럼 사용
-        gb.configure_column("topic", header_name="주제", width=200)
-        gb.configure_column("content_markdown", header_name="내용(요약)", width=300)
-        gb.configure_column("solution_steps", header_name="해설유무", width=100)
-        gb.configure_column("tags_str", header_name="태그", width=150) # 가공된 컬럼 사용
+        gb.configure_column("exam_info_str", header_name="출제정보", width=100)
+        gb.configure_column("topic", header_name="주제", width=180)
+        gb.configure_column("content_markdown", header_name="내용(요약)", width=250)
+
+        # 가공된 컬럼들 표시
+        gb.configure_column("sol_check", header_name="해설", width=70, cellStyle={'textAlign': 'center'})
+        gb.configure_column("sim_type_str", header_name="시뮬레이터", width=120)
+        gb.configure_column("tags_str", header_name="태그", width=150)
         
         # 원본 객체 컬럼은 숨김 처리 (hide=True)
         gb.configure_column("exam_info", hide=True)
         gb.configure_column("tags", hide=True)
         gb.configure_column("choices", hide=True)
-        gb.configure_column("choices_str", hide=True) # 보기는 너무 길어서 일단 숨김 (필요시 false)
+        gb.configure_column("solution_steps", hide=True)
+        gb.configure_column("sim_config", hide=True) # 원본 숨김
         gb.configure_column("_id", hide=True)
 
         gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
