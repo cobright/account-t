@@ -849,18 +849,56 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
 
         # 1. DB에서 데이터 로드
         db_questions = load_questions()
+
+        # [NEW] 데이터 프레임 가공 (보기 좋게 변환) ✨
+        if db_questions:
+            df = pd.DataFrame(db_questions)
+            
+            # (1) Exam Info: {year:2024, type:CPA} -> "2024 CPA" 형태로 변환
+            if 'exam_info' in df.columns:
+                df['exam_info_str'] = df['exam_info'].apply(
+                    lambda x: f"{x.get('year', '')} {x.get('type', '')}" if isinstance(x, dict) else str(x)
+                )
+            
+            # (2) Tags: ['재고', '선입선출'] -> "재고, 선입선출" 형태로 변환
+            if 'tags' in df.columns:
+                df['tags_str'] = df['tags'].apply(
+                    lambda x: ", ".join(x) if isinstance(x, list) else str(x)
+                )
+
+            # (3) Choices: 딕셔너리를 문자열로 변환 (너무 길면 잘릴 수 있음)
+            if 'choices' in df.columns:
+                df['choices_str'] = df['choices'].apply(
+                    lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else str(x)
+                )
+        else:
+            df = pd.DataFrame()
         
-        # 2. Grid 구성 (문제 목록 표시)
-        gb = GridOptionsBuilder.from_dataframe(pd.DataFrame(db_questions))
+        # 2. Grid 구성
+        gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_selection('single', use_checkbox=True)
+        
+        # [NEW] 컬럼 설정 (가공된 컬럼을 보여줌)
+        gb.configure_column("question_id", header_name="ID", width=120, pinned="left")
+        gb.configure_column("exam_info_str", header_name="출제정보", width=100) # 가공된 컬럼 사용
+        gb.configure_column("topic", header_name="주제", width=200)
         gb.configure_column("content_markdown", header_name="내용(요약)", width=300)
-        gb.configure_column("solution_steps", header_name="해설유무", width=100) # 해설 있는지 확인용
+        gb.configure_column("solution_steps", header_name="해설유무", width=100)
+        gb.configure_column("tags_str", header_name="태그", width=150) # 가공된 컬럼 사용
+        
+        # 원본 객체 컬럼은 숨김 처리 (hide=True)
+        gb.configure_column("exam_info", hide=True)
+        gb.configure_column("tags", hide=True)
+        gb.configure_column("choices", hide=True)
+        gb.configure_column("choices_str", hide=True) # 보기는 너무 길어서 일단 숨김 (필요시 false)
+        gb.configure_column("_id", hide=True)
+
         gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=10)
         gridOptions = gb.build()
         
         st.markdown("### 1️⃣ 등록된 문제 목록 (선택하여 수정)")
         grid_response = AgGrid(
-            pd.DataFrame(db_questions),
+            df,
             gridOptions=gridOptions,
             data_return_mode='AS_INPUT', 
             update_mode='MODEL_CHANGED',
@@ -868,7 +906,8 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             height=300,
             theme='streamlit'
         )
-
+        
+        # (이하 선택된 행 처리 로직은 기존과 동일)
         selected = grid_response['selected_rows']
         target_q_data = selected[0] if selected else None
         
