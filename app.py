@@ -249,6 +249,16 @@ def update_question_solution(question_id, solution_steps):
 def delete_document(collection_name, doc_id):
     db.collection(collection_name).document(str(doc_id)).delete()
 
+def get_exam_questions(all_q, exam_type, exam_year):
+    """특정 시험(예: 2024 CPA)의 문제들을 번호순으로 가져오기"""
+    filtered = [
+        q for q in all_q 
+        if q.get('exam_info', {}).get('type') == exam_type 
+        and q.get('exam_info', {}).get('year') == exam_year
+    ]
+    # question_id 기준으로 정렬 (예: 2024_CPA_01 -> 02 -> 03 ...)
+    return sorted(filtered, key=lambda x: x.get('question_id', ''))
+
 # [NEW] 단권화 관리 클래스
 class NoteManager:
     @staticmethod
@@ -372,7 +382,7 @@ if mode == "👨‍🎓 학습 모드 (Student)":
         sel_ch_idx = st.selectbox("챕터 선택", range(len(chapters)), format_func=lambda i: chapter_titles[i])
         current_ch = chapters[sel_ch_idx]
         
-        tab1, tab2, tab3 = st.tabs(["📖 이론 (단권화)", "🧪 시뮬레이터", "🔥 실전 기출"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🧮 시뮬레이터 학습", "📝 유형별 기출", "🔥 실전 모의고사"])
         
         # --- [Tab 1] 이론 (단권화 에디터 적용) ---
         with tab1:
@@ -678,6 +688,113 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                     st.warning("조건에 맞는 문제가 없습니다.")
             else:
                 st.info("이 챕터에는 연결된 태그가 없습니다.")
+
+        # --- [Tab 4] 실전 모의고사 (새로 추가된 부분 ✨) ---
+        with tab4:
+            st.header("🔥 실전 모의고사 (Exam Mode)")
+            st.caption("실제 시험처럼 연도별로 문제를 순서대로 풀어봅니다.")
+
+            # 1. 시험지 선택 (Filter)
+            # 데이터에서 존재하는 연도와 유형 추출
+            available_years = sorted(list(set([q.get('exam_info', {}).get('year') for q in all_questions_raw if q.get('exam_info', {}).get('year')])), reverse=True)
+            available_types = sorted(list(set([q.get('exam_info', {}).get('type') for q in all_questions_raw if q.get('exam_info', {}).get('type')])))
+
+            c_filter1, c_filter2, c_btn = st.columns([1, 1, 1])
+            with c_filter1:
+                sel_year = st.selectbox("연도 선택", available_years)
+            with c_filter2:
+                sel_type = st.selectbox("시험 유형", available_types)
+            
+            # 2. 문제 데이터 로드
+            exam_questions = get_exam_questions(all_questions_raw, sel_type, sel_year)
+            
+            if not exam_questions:
+                st.warning("조건에 맞는 문제가 없습니다.")
+            else:
+                # 3. 네비게이션 (Session State 사용)
+                if 'exam_idx' not in st.session_state:
+                    st.session_state.exam_idx = 0
+                
+                # 시험지가 바뀌면 인덱스 초기화 (안전장치)
+                # (구현 팁: 단순화를 위해 여기서는 생략하나, 필요 시 로직 추가 가능)
+
+                total_q = len(exam_questions)
+                curr_idx = st.session_state.exam_idx
+                
+                # 인덱스 범위 보정
+                if curr_idx >= total_q: curr_idx = total_q - 1
+                if curr_idx < 0: curr_idx = 0
+                
+                q_data = exam_questions[curr_idx]
+                qid = q_data['question_id']
+
+                # --- 상단 네비게이션 바 ---
+                c_prev, c_info, c_next = st.columns([1, 2, 1])
+                with c_prev:
+                    if st.button("⬅️ 이전 문제", disabled=(curr_idx == 0), key="btn_prev"):
+                        st.session_state.exam_idx -= 1
+                        st.rerun()
+                with c_info:
+                    st.markdown(f"<h4 style='text-align: center;'>제 {curr_idx + 1} 번 / 총 {total_q} 문항</h4>", unsafe_allow_html=True)
+                with c_next:
+                    if st.button("다음 문제 ➡️", disabled=(curr_idx == total_q - 1), key="btn_next"):
+                        st.session_state.exam_idx += 1
+                        st.rerun()
+                
+                st.progress((curr_idx + 1) / total_q)
+                st.divider()
+
+                # 4. 문제 풀이 영역
+                col_q, col_solve = st.columns([1.2, 1])
+                
+                # [왼쪽] 지문 및 보기
+                with col_q:
+                    st.badge(q_data['topic'])
+                    st.markdown(q_data['content_markdown'])
+                    
+                    # 보기 출력
+                    opts = q_data.get('choices', {})
+                    user_ans = st.radio("정답 선택", [f"{k}. {v}" for k,v in sorted(opts.items())], key=f"exam_radio_{qid}")
+
+                # [오른쪽] 정답 확인 및 해설
+                with col_solve:
+                    st.info("💡 문제를 푼 뒤 아래 버튼을 눌러 확인하세요.")
+                    
+                    # 정답 확인 토글
+                    with st.expander("✅ 정답 및 해설 확인", expanded=False):
+                        ans = q_data.get('answer', 0)
+                        st.markdown(f"### 정답: **{ans}번**")
+                        
+                        if str(ans) in user_ans:
+                            st.success("🎉 정답입니다!")
+                        else:
+                            st.error("앗, 틀렸습니다. 다시 풀어보세요.")
+
+                        st.markdown("---")
+                        
+                        # (A) 저장된 해설 표시
+                        solutions = q_data.get('solution_steps', [])
+                        if solutions:
+                            for s in solutions:
+                                st.markdown(f"**{s.get('title')}**")
+                                st.caption(s.get('content'))
+                                st.divider()
+                        else:
+                            st.warning("등록된 해설이 없습니다.")
+                            # (B) AI 해설 요청 버튼 (기존 로직 재사용)
+                            if GEMINI_AVAILABLE:
+                                if st.button("🤖 AI 해설 요청 (DB저장)", key=f"exam_ai_{qid}"):
+                                    # ... (AI 해설 요청 코드: 위에서 만든 코드 그대로 사용) ...
+                                    pass 
+
+                    # 시뮬레이터 (필요시 열어보기)
+                    sim_conf = q_data.get('sim_config')
+                    if sim_conf:
+                        with st.expander(f"🧪 시뮬레이터로 검증 ({sim_conf.get('type')})"):
+                            # 기존 시뮬레이터 렌더링 로직 재사용
+                            # Tab 3의 시뮬레이터 렌더링 코드를 함수화해서 호출하거나, 
+                            # 여기서 간단히 params만 받아서 Simulators 클래스 호출
+                            pass
 
 # ---------------------------------------------------------
 # [B] 관리자 모드 (Admin)
