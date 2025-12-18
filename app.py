@@ -991,34 +991,76 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         col_master, col_solution = st.columns([1, 1])
 
         # ---------------------------------------------------------
-        # [섹션 A] Master JSON 관리 (신규 등록 및 전체 수정)
+        # [섹션 A] Master JSON 관리 (등록/수정/삭제)
         # ---------------------------------------------------------
         with col_master:
             st.subheader("📝 문제 등록 / 수정 (Master JSON)")
-            st.caption("새로운 문제를 등록하거나, 문제의 지문/보기/정답을 수정합니다.")
             
-            # 선택된 문제 데이터가 있으면 불러오고, 없으면 빈 템플릿
+            # 선택 여부에 따른 UI 분기
             if target_q_data:
                 # [수정 모드]
-                st.info(f"선택된 문제: **{target_q_data.get('question_id')}**")
+                q_id = target_q_data.get('question_id')
+                st.info(f"선택된 문제: **{q_id}**")
                 
-                # 내부 필드(_id) 제거
+                # 내부 필드 및 AgGrid 관련 필드 제거
                 safe_data = {k:v for k,v in target_q_data.items() if k not in ['_id', '_selectedRowNodeInfo']}
-                default_val_q = json.dumps(safe_data, indent=2, ensure_ascii=False)
                 
-                # 버튼 라벨
+                # -----------------------------------------------------------
+                # [긴급] Master 데이터 오염 감지 로직 ✨
+                # -----------------------------------------------------------
+                is_master_corrupted = False
+                corruption_keys = ['_offsets', 'valueOffsets', 'values', 'stride', '_nullCount', 'children', 'type']
+                
+                # 데이터 안에 위 키워드 중 하나라도 포함되어 있으면 오염으로 간주
+                if any(k in safe_data for k in corruption_keys):
+                    is_master_corrupted = True
+                
+                if is_master_corrupted:
+                    st.error("🚨 **데이터 오염 감지됨! (Master Data)**")
+                    st.warning(f"이 문제({q_id})의 본문 데이터가 손상되었습니다(Apache Arrow 포맷).")
+                    
+                    # 텍스트 에디터에는 빈 값 혹은 템플릿만 표시 (렉 방지)
+                    default_val_q = "{}" 
+                    
+                    # [복구 버튼]
+                    if st.button("🛠️ 문제 본문 초기화 (Repair)", key="btn_fix_master"):
+                        # 최소한의 기본 템플릿으로 덮어쓰기 (ID는 유지)
+                        repair_template = {
+                            "question_id": q_id,
+                            "topic": "복구됨",
+                            "engine_type": "General",
+                            "exam_info": target_q_data.get('exam_info', {"type": "Unknown", "year": 0}),
+                            "content_markdown": "데이터 오염으로 인해 초기화되었습니다. 내용을 다시 입력해주세요.",
+                            "choices": {"1": "", "2": "", "3": "", "4": "", "5": ""},
+                            "answer": 0,
+                            "sim_config": None,
+                            "solution_steps": [] # 해설도 같이 날아갔을 수 있으므로 빈 리스트
+                        }
+                        
+                        db.collection("questions").document(str(q_id)).set(repair_template) # update 대신 set으로 완전히 덮어쓰기
+                        st.success(f"[{q_id}] 문제 데이터를 정상 템플릿으로 초기화했습니다.")
+                        load_questions.clear()
+                        time.sleep(1.0)
+                        st.rerun()
+                        
+                else:
+                    # 정상 데이터일 경우
+                    default_val_q = json.dumps(safe_data, indent=2, ensure_ascii=False)
+
+                # 변수명 정의
                 btn_save_label = "💾 수정사항 저장 (Update)"
                 
-                # [복구] 삭제 버튼 기능 추가 ✨
+                # [복구] 삭제 버튼 (오염 여부 상관없이 표시)
                 with st.expander("🗑️ 문제 삭제 (Danger Zone)", expanded=False):
                     st.warning("정말 삭제하시겠습니까? 복구할 수 없습니다.")
                     if st.button("❌ 현재 문제 삭제하기", key="btn_delete"):
                         q_id_to_delete = target_q_data.get('question_id')
                         db.collection("questions").document(str(q_id_to_delete)).delete()
                         st.success("삭제되었습니다.")
-                        load_questions.clear() # 캐시 초기화
+                        load_questions.clear()
                         time.sleep(1.0)
                         st.rerun()
+
             else:
                 # [신규 모드]
                 st.caption("목록에서 문제를 선택하면 수정 모드로 바뀝니다.")
@@ -1033,21 +1075,18 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                     "sim_config": None
                 }
                 default_val_q = json.dumps(new_template, indent=2, ensure_ascii=False)
-                btn_label = "🆕 신규 문제 등록 (Create)"
+                btn_save_label = "🆕 신규 문제 등록 (Create)"
 
+            # JSON 입력창 (오염 시 비활성 느낌을 주기 위해 placeholder 활용 가능하나 여기선 값 비움)
             q_json_input = st.text_area("Master JSON Input", value=default_val_q, height=400, key="master_json_area")
 
+            # 저장 버튼 (오염된 상태에서는 저장 버튼을 숨기거나 막는 것이 안전하지만, 사용자가 직접 고쳐서 넣을 수도 있으니 유지)
             if st.button(btn_save_label, key="btn_master_save"):
                 try:
                     save_data = json.loads(q_json_input)
+                    if isinstance(save_data, list): data_list = save_data
+                    else: data_list = [save_data]
                     
-                    # 배치 등록(리스트) 지원
-                    if isinstance(save_data, list):
-                        data_list = save_data
-                    else:
-                        data_list = [save_data]
-                    
-                    # 저장 함수 호출 (save_json_batch는 app.py 상단에 정의되어 있어야 함)
                     save_json_batch("questions", data_list, "question_id")
                     
                     st.success(f"저장 완료! ({len(data_list)}건)")
