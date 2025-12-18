@@ -969,28 +969,22 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             update_mode= GridUpdateMode.SELECTION_CHANGED,
             fit_columns_on_grid_load=False,
             height=300,
-            theme='streamlit'
+            theme='streamlit',
+            key='admin_grid_v1' # 고유 키 부여 (중요)
         )
         
-        # (이하 선택된 행 처리 로직은 기존과 동일)
         selected = grid_response['selected_rows']
-        
-        # [핵심 수정 2] 데이터프레임 변환 최적화 (비어있으면 변환 안 함) ✨
         target_q_data = None
-        
-        if isinstance(selected, pd.DataFrame):
-            if not selected.empty:
-                # 첫 번째 행만 딕셔너리로 변환 (전체 변환 방지)
-                target_q_data = selected.iloc[0].to_dict()
-                import json
-                try:
-                    json.dumps(target_q_data) # 테스트
-                except:
-                    target_q_data = selected.to_dict('records')[0]
-                    
-        elif isinstance(selected, list) and len(selected) > 0:
-            target_q_data = selected[0]
-        
+
+        # [핵심 수정 2] 선택 데이터 파싱 로직 강화
+        if selected is not None:
+            # DataFrame인 경우
+            if isinstance(selected, pd.DataFrame) and not selected.empty:
+                target_q_data = selected.to_dict('records')[0]
+            # 리스트인 경우
+            elif isinstance(selected, list) and len(selected) > 0:
+                target_q_data = selected[0]
+
         st.divider()
 
         # 화면 분할: 왼쪽(Master Data), 오른쪽(Solution Data)
@@ -1005,12 +999,29 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
             
             # 선택된 문제 데이터가 있으면 불러오고, 없으면 빈 템플릿
             if target_q_data:
-                # DB에서 가져온 데이터에는 '_id' 같은 내부 필드가 있을 수 있으므로 정리
-                safe_data = {k:v for k,v in target_q_data.items() if k != '_id'}
+                # [수정 모드]
+                st.info(f"선택된 문제: **{target_q_data.get('question_id')}**")
+                
+                # 내부 필드(_id) 제거
+                safe_data = {k:v for k,v in target_q_data.items() if k not in ['_id', '_selectedRowNodeInfo']}
                 default_val_q = json.dumps(safe_data, indent=2, ensure_ascii=False)
-                btn_label = "💾 기존 문제 수정 (Update)"
+                
+                # 버튼 라벨
+                btn_save_label = "💾 수정사항 저장 (Update)"
+                
+                # [복구] 삭제 버튼 기능 추가 ✨
+                with st.expander("🗑️ 문제 삭제 (Danger Zone)", expanded=False):
+                    st.warning("정말 삭제하시겠습니까? 복구할 수 없습니다.")
+                    if st.button("❌ 현재 문제 삭제하기", key="btn_delete"):
+                        q_id_to_delete = target_q_data.get('question_id')
+                        db.collection("questions").document(str(q_id_to_delete)).delete()
+                        st.success("삭제되었습니다.")
+                        load_questions.clear() # 캐시 초기화
+                        time.sleep(1.0)
+                        st.rerun()
             else:
-                # 신규 등록용 템플릿
+                # [신규 모드]
+                st.caption("목록에서 문제를 선택하면 수정 모드로 바뀝니다.")
                 new_template = {
                     "question_id": "2024_NEW_01",
                     "topic": "주제 입력",
