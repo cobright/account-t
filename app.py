@@ -1060,34 +1060,57 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         # ---------------------------------------------------------
         # [섹션 B] 스마트 해설 관리 (Solution Only)
         # ---------------------------------------------------------
-        # ---------------------------------------------------------
-        # [섹션 B] 스마트 해설 관리 (Solution Only)
-        # ---------------------------------------------------------
         with col_solution:
             st.subheader("💡 해설(Solution) 전용 관리")
-            st.caption("AI 프롬프트 결과(JSON)를 여기에 붙여넣으세요.")
             
-            # [속도 개선] 기본적으로는 빈 칸으로 시작 (렉 방지) ✨
-            # 사용자가 원할 때만 기존 데이터를 불러오도록 '체크박스' 추가
-            load_existing = st.checkbox("✏️ 선택된 문제의 기존 해설 불러오기 (수정 모드)", value=False)
+            # 1. 기존 데이터 가져오기
+            current_sol = target_q_data.get('solution_steps', [])
             
-            default_sol = ""
+            # [긴급] 데이터 오염 감지 로직 (Apache Arrow 포맷 감지) ✨
+            is_corrupted = False
             
-            if target_q_data and load_existing:
-                current_sol = target_q_data.get('solution_steps', [])
-                
-                # [안전 장치] 데이터가 비정상적으로 크면(배치 데이터 오저장 등) 경고
-                temp_json = json.dumps(current_sol, indent=2, ensure_ascii=False)
-                if len(temp_json) > 10000: # 1만 자가 넘으면 경고
-                    st.warning(f"⚠️ 데이터 양이 너무 많습니다 ({len(temp_json)}자). 잘못 저장된 배치 파일일 수 있습니다.")
-                    st.error("아래 입력창이 느려질 수 있으니, 필요시 '해설 초기화'를 고려하세요.")
-                
-                default_sol = temp_json
+            # 데이터가 딕셔너리인데 '_offsets' 같은 내부 키가 보이면 오염된 것임
+            if isinstance(current_sol, dict) and any(k in current_sol for k in ['_offsets', 'valueOffsets', 'data']):
+                is_corrupted = True
+            
+            # 데이터가 리스트인데, 그 안의 내용물이 이상할 경우
+            elif isinstance(current_sol, list) and len(current_sol) > 0:
+                # 첫 번째 요소가 오염된 딕셔너리인지 확인
+                first = current_sol[0]
+                if isinstance(first, dict) and any(k in first for k in ['_offsets', 'valueOffsets']):
+                    is_corrupted = True
 
-            # 해설 입력창 (높이 조정)
-            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=400, key="sol_json_area", placeholder="여기에 JSON을 붙여넣으세요. (기존 해설을 수정하려면 위 체크박스를 켜세요)")
+            # 2. 화면 표시 결정
+            if is_corrupted:
+                st.error("🚨 **데이터 오염 감지됨!**")
+                st.warning("이 문제의 해설 데이터에 '메모리 객체(Apache Arrow)'가 잘못 저장되어 있습니다.\n앱 속도 저하의 원인이므로 아래 [복구] 버튼을 눌러 초기화해주세요.")
+                
+                # 입력창에는 빈 값만 보여줌 (렉 방지)
+                default_sol = "[]" 
+                
+                # [복구 버튼]
+                if st.button("🛠️ 오염된 데이터 초기화 (Fix)", key="btn_fix_corruption"):
+                    t_id = target_q_data.get('question_id')
+                    db.collection("questions").document(str(t_id)).update({"solution_steps": []})
+                    st.success(f"[{t_id}] 문제의 해설 데이터를 정상화(초기화)했습니다.")
+                    load_questions.clear()
+                    time.sleep(1.0)
+                    st.rerun()
+            
+            else:
+                # 정상적인 경우 (기존 로직)
+                load_existing = st.checkbox("✏️ 기존 해설 불러오기", value=False)
+                default_sol = ""
+                
+                if target_q_data and load_existing:
+                    default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False)
+                    if len(default_sol) > 10000:
+                        st.warning(f"⚠️ 데이터 양이 많습니다 ({len(default_sol)}자).")
 
-            # 버튼 그룹 (저장 / 초기화)
+            # 3. 입력창 및 저장 버튼 (오염된 상태면 입력창은 빈 상태로 시작)
+            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=400, key="sol_json_area")
+
+            # 버튼 그룹
             c_btn1, c_btn2 = st.columns([1, 1])
             
             with c_btn1:
@@ -1096,51 +1119,48 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
                         if not sol_json_input.strip():
                             st.warning("내용이 없습니다.")
                             st.stop()
-
                         input_data = json.loads(sol_json_input)
-                        if not isinstance(input_data, list):
-                            input_data = [input_data]
-
+                        if not isinstance(input_data, list): input_data = [input_data]
+                        
+                        # (저장 로직은 동일)
                         first_item = input_data[0]
                         success_count = 0
-
-                        # Case A: 배치 모드 (ID 포함)
+                        
                         if "question_id" in first_item and "solution_steps" in first_item:
+                            # 배치 저장
                             progress_bar = st.progress(0)
                             for i, item in enumerate(input_data):
                                 t_id = item.get("question_id")
                                 t_steps = item.get("solution_steps")
-                                if t_id and t_steps:
+                                if t_id:
                                     db.collection("questions").document(str(t_id)).update({"solution_steps": t_steps})
                                     success_count += 1
                                 progress_bar.progress((i + 1) / len(input_data))
-                            st.success(f"총 {success_count}건의 해설 업데이트 완료!")
-
-                        # Case B: 단일 모드 (ID 미포함 -> 현재 선택된 문제에 저장)
+                            st.success(f"총 {success_count}건 업데이트!")
+                            
                         elif "title" in first_item and "content" in first_item:
+                            # 단일 저장
                             if target_q_data:
                                 t_id = target_q_data['question_id']
                                 db.collection("questions").document(str(t_id)).update({"solution_steps": input_data})
-                                st.success(f"[{t_id}] 문제에 해설을 저장했습니다.")
+                                st.success(f"[{t_id}] 저장 완료")
                             else:
-                                st.error("⚠️ 왼쪽 목록에서 해설을 추가할 문제를 먼저 선택해주세요.")
+                                st.error("문제 선택 필요")
                         else:
-                            st.error("형식이 올바르지 않습니다.")
-
+                            st.error("형식 불일치")
+                            
                         load_questions.clear()
                         time.sleep(1.0)
                         st.rerun()
-
                     except Exception as e:
                         st.error(f"오류: {e}")
 
-            # [비상 기능] 잘못된 데이터 초기화 버튼
             with c_btn2:
                 if target_q_data:
-                    if st.button("🗑️ 이 문제의 해설만 비우기", key="btn_sol_clear"):
+                    if st.button("🗑️ 해설 비우기", key="btn_sol_clear"):
                         t_id = target_q_data['question_id']
                         db.collection("questions").document(str(t_id)).update({"solution_steps": []})
-                        st.success("해설 데이터를 초기화했습니다.")
+                        st.success("초기화 완료")
                         load_questions.clear()
                         time.sleep(1.0)
                         st.rerun()
