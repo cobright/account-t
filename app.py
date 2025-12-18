@@ -978,6 +978,12 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         
         # (이하 선택된 행 처리 로직은 기존과 동일)
         selected = grid_response['selected_rows']
+        
+        # [Bug Fix] selected가 DataFrame으로 반환될 경우 리스트(Dict)로 변환 ✨
+        if isinstance(selected, pd.DataFrame):
+            selected = selected.to_dict('records')
+
+        # 이제 selected는 항상 리스트이므로 안전하게 접근 가능
         target_q_data = selected[0] if selected else None
         
         st.divider()
