@@ -940,10 +940,11 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         
         # 2. Grid 구성
         gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_selection('single', use_checkbox=True)
+        gb.configure_selection('single', use_checkbox=False)
         
         # [NEW] 컬럼 설정 (사용자 친화적 표시)
-        gb.configure_column("question_id", header_name="ID", width=120, pinned="left")
+        gb.configure_column("question_id", header_name="ID", width=140, pinned="left", checkboxSelection=True)
+
         gb.configure_column("exam_info_str", header_name="출제정보", width=100)
         gb.configure_column("topic", header_name="주제", width=180)
         gb.configure_column("content_markdown", header_name="내용(요약)", width=250)
