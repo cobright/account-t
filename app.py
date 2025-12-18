@@ -1060,55 +1060,87 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         # ---------------------------------------------------------
         # [섹션 B] 스마트 해설 관리 (Solution Only)
         # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # [섹션 B] 스마트 해설 관리 (Solution Only)
+        # ---------------------------------------------------------
         with col_solution:
             st.subheader("💡 해설(Solution) 전용 관리")
-            st.caption("AI 프롬프트 결과(JSON)를 여기에 붙여넣으세요. ID가 있으면 찾아갑니다.")
+            st.caption("AI 프롬프트 결과(JSON)를 여기에 붙여넣으세요.")
             
-            # 현재 선택된 문제의 해설만 따로 보여주기
-            current_sol = target_q_data.get('solution_steps', []) if target_q_data else []
-            default_sol = json.dumps(current_sol, indent=2, ensure_ascii=False) if current_sol else ""
+            # [속도 개선] 기본적으로는 빈 칸으로 시작 (렉 방지) ✨
+            # 사용자가 원할 때만 기존 데이터를 불러오도록 '체크박스' 추가
+            load_existing = st.checkbox("✏️ 선택된 문제의 기존 해설 불러오기 (수정 모드)", value=False)
             
-            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=400, key="sol_json_area")
+            default_sol = ""
+            
+            if target_q_data and load_existing:
+                current_sol = target_q_data.get('solution_steps', [])
+                
+                # [안전 장치] 데이터가 비정상적으로 크면(배치 데이터 오저장 등) 경고
+                temp_json = json.dumps(current_sol, indent=2, ensure_ascii=False)
+                if len(temp_json) > 10000: # 1만 자가 넘으면 경고
+                    st.warning(f"⚠️ 데이터 양이 너무 많습니다 ({len(temp_json)}자). 잘못 저장된 배치 파일일 수 있습니다.")
+                    st.error("아래 입력창이 느려질 수 있으니, 필요시 '해설 초기화'를 고려하세요.")
+                
+                default_sol = temp_json
 
-            if st.button("💾 해설만 저장 (Smart Save)", key="btn_sol_save"):
-                try:
-                    if not sol_json_input.strip():
-                        st.warning("내용이 없습니다.")
-                        st.stop()
+            # 해설 입력창 (높이 조정)
+            sol_json_input = st.text_area("Solution JSON Input", value=default_sol, height=400, key="sol_json_area", placeholder="여기에 JSON을 붙여넣으세요. (기존 해설을 수정하려면 위 체크박스를 켜세요)")
 
-                    input_data = json.loads(sol_json_input)
-                    if not isinstance(input_data, list):
-                        input_data = [input_data]
+            # 버튼 그룹 (저장 / 초기화)
+            c_btn1, c_btn2 = st.columns([1, 1])
+            
+            with c_btn1:
+                if st.button("💾 해설 저장 (Smart Save)", key="btn_sol_save"):
+                    try:
+                        if not sol_json_input.strip():
+                            st.warning("내용이 없습니다.")
+                            st.stop()
 
-                    first_item = input_data[0]
-                    success_count = 0
+                        input_data = json.loads(sol_json_input)
+                        if not isinstance(input_data, list):
+                            input_data = [input_data]
 
-                    # Case A: 배치 모드 (ID 포함)
-                    if "question_id" in first_item and "solution_steps" in first_item:
-                        progress_bar = st.progress(0)
-                        for i, item in enumerate(input_data):
-                            t_id = item.get("question_id")
-                            t_steps = item.get("solution_steps")
-                            if t_id and t_steps:
-                                db.collection("questions").document(str(t_id)).update({"solution_steps": t_steps})
-                                success_count += 1
-                            progress_bar.progress((i + 1) / len(input_data))
-                        st.success(f"총 {success_count}건의 해설 업데이트 완료!")
+                        first_item = input_data[0]
+                        success_count = 0
 
-                    # Case B: 단일 모드 (ID 미포함 -> 현재 선택된 문제에 저장)
-                    elif "title" in first_item and "content" in first_item:
-                        if target_q_data:
-                            t_id = target_q_data['question_id']
-                            db.collection("questions").document(str(t_id)).update({"solution_steps": input_data})
-                            st.success(f"[{t_id}] 문제에 해설을 저장했습니다.")
+                        # Case A: 배치 모드 (ID 포함)
+                        if "question_id" in first_item and "solution_steps" in first_item:
+                            progress_bar = st.progress(0)
+                            for i, item in enumerate(input_data):
+                                t_id = item.get("question_id")
+                                t_steps = item.get("solution_steps")
+                                if t_id and t_steps:
+                                    db.collection("questions").document(str(t_id)).update({"solution_steps": t_steps})
+                                    success_count += 1
+                                progress_bar.progress((i + 1) / len(input_data))
+                            st.success(f"총 {success_count}건의 해설 업데이트 완료!")
+
+                        # Case B: 단일 모드 (ID 미포함 -> 현재 선택된 문제에 저장)
+                        elif "title" in first_item and "content" in first_item:
+                            if target_q_data:
+                                t_id = target_q_data['question_id']
+                                db.collection("questions").document(str(t_id)).update({"solution_steps": input_data})
+                                st.success(f"[{t_id}] 문제에 해설을 저장했습니다.")
+                            else:
+                                st.error("⚠️ 왼쪽 목록에서 해설을 추가할 문제를 먼저 선택해주세요.")
                         else:
-                            st.error("⚠️ 왼쪽 목록에서 해설을 추가할 문제를 먼저 선택해주세요.")
-                    else:
-                        st.error("형식이 올바르지 않습니다.")
+                            st.error("형식이 올바르지 않습니다.")
 
-                    load_questions.clear()
-                    time.sleep(1.0)
-                    st.rerun()
+                        load_questions.clear()
+                        time.sleep(1.0)
+                        st.rerun()
 
-                except Exception as e:
-                    st.error(f"오류: {e}")
+                    except Exception as e:
+                        st.error(f"오류: {e}")
+
+            # [비상 기능] 잘못된 데이터 초기화 버튼
+            with c_btn2:
+                if target_q_data:
+                    if st.button("🗑️ 이 문제의 해설만 비우기", key="btn_sol_clear"):
+                        t_id = target_q_data['question_id']
+                        db.collection("questions").document(str(t_id)).update({"solution_steps": []})
+                        st.success("해설 데이터를 초기화했습니다.")
+                        load_questions.clear()
+                        time.sleep(1.0)
+                        st.rerun()
