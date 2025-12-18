@@ -1037,7 +1037,7 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
 
             q_json_input = st.text_area("Master JSON Input", value=default_val_q, height=400, key="master_json_area")
 
-            if st.button(btn_label, key="btn_master_save"):
+            if st.button(btn_save_label, key="btn_master_save"):
                 try:
                     save_data = json.loads(q_json_input)
                     
