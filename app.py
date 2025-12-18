@@ -646,9 +646,18 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                             if sols:
                                 # 저장된 해설이 있는 경우 바로 표시
                                 for s in sols:
-                                    st.markdown(f"**{s.get('title','Step')}**")
-                                    st.caption(s.get('content',''))
-                                    st.divider()
+                                    st.markdown(f"#### {s.get('title')}") # 제목은 헤더로 강조
+                            
+                                    # [수정] 줄바꿈 문자(\n) 처리 로직 추가 ✨
+                                    raw_content = s.get('content', '')
+                                    
+                                    # 1. 텍스트로 된 "\n"을 실제 줄바꿈 문자로 치환
+                                    clean_content = raw_content.replace('\\n', '\n')
+                                    
+                                    # 2. 마크다운으로 출력
+                                    st.markdown(clean_content)
+                                    
+                                    st.divider() # 단계별 구분선
                             else:
                                 st.warning("등록된 해설이 없습니다.")
                                 
