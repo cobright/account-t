@@ -1,3 +1,4 @@
+import re
 import time
 import streamlit as st
 import pandas as pd
@@ -646,18 +647,19 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                             if sols:
                                 # 저장된 해설이 있는 경우 바로 표시
                                 for s in sols:
-                                    st.markdown(f"#### {s.get('title')}") # 제목은 헤더로 강조
-                            
-                                    # [수정] 줄바꿈 문자(\n) 처리 로직 추가 ✨
+                                    # 1. 제목 디자인: [주제] 부분을 파란색/볼드체로 변환
+                                    raw_title = s.get('title', 'Step')
+                                    # 정규식: 대괄호 [...] 로 감싸진 부분을 찾아서 :blue[...] 색상 태그를 입힘
+                                    styled_title = re.sub(r"\[(.*?)\]", r"**:blue[[\1]]**", raw_title)
+
+                                    st.markdown(f"#### {styled_title}")
+                                
+                                    # 2. 본문 줄바꿈 처리 (\n -> 실제 엔터)
                                     raw_content = s.get('content', '')
-                                    
-                                    # 1. 텍스트로 된 "\n"을 실제 줄바꿈 문자로 치환
                                     clean_content = raw_content.replace('\\n', '\n')
                                     
-                                    # 2. 마크다운으로 출력
                                     st.markdown(clean_content)
-                                    
-                                    st.divider() # 단계별 구분선
+                                    st.divider()
                             else:
                                 st.warning("등록된 해설이 없습니다.")
                                 
@@ -786,18 +788,19 @@ if mode == "👨‍🎓 학습 모드 (Student)":
                         solutions = q_data.get('solution_steps', [])
                         if solutions:
                             for s in solutions:
-                                st.markdown(f"#### {s.get('title')}") # 제목은 헤더로 강조
+                                # 1. 제목 디자인: [주제] 부분을 파란색/볼드체로 변환
+                                raw_title = s.get('title', 'Step')
+                                # 정규식: 대괄호 [...] 로 감싸진 부분을 찾아서 :blue[...] 색상 태그를 입힘
+                                styled_title = re.sub(r"\[(.*?)\]", r"**:blue[[\1]]**", raw_title)
+
+                                st.markdown(f"#### {styled_title}")
                             
-                                # [수정] 줄바꿈 문자(\n) 처리 로직 추가 ✨
+                                # 2. 본문 줄바꿈 처리 (\n -> 실제 엔터)
                                 raw_content = s.get('content', '')
-                                
-                                # 1. 텍스트로 된 "\n"을 실제 줄바꿈 문자로 치환
                                 clean_content = raw_content.replace('\\n', '\n')
                                 
-                                # 2. 마크다운으로 출력
                                 st.markdown(clean_content)
-                                
-                                st.divider() # 단계별 구분선
+                                st.divider()
                         else:
                             st.warning("등록된 해설이 없습니다.")
                             # (B) AI 해설 요청 버튼 (기존 로직 재사용)
