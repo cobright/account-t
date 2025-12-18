@@ -941,15 +941,11 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         # 2. Grid 구성
         gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_selection('single', use_checkbox=False)
-        
-        # [NEW] 컬럼 설정 (사용자 친화적 표시)
         gb.configure_column("question_id", header_name="ID", width=140, pinned="left", checkboxSelection=True)
 
         gb.configure_column("exam_info_str", header_name="출제정보", width=100)
         gb.configure_column("topic", header_name="주제", width=180)
         gb.configure_column("content_markdown", header_name="내용(요약)", width=250)
-
-        # 가공된 컬럼들 표시
         gb.configure_column("sol_check", header_name="해설", width=70, cellStyle={'textAlign': 'center'})
         gb.configure_column("sim_type_str", header_name="시뮬레이터", width=120)
         gb.configure_column("tags_str", header_name="태그", width=150)
@@ -968,9 +964,9 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         st.markdown("### 1️⃣ 등록된 문제 목록 (선택하여 수정)")
         grid_response = AgGrid(
             df,
-            gridOptions=gridOptions,
-            data_return_mode='AS_INPUT', 
-            update_mode='MODEL_CHANGED',
+            gridOptions= gridOptions,
+            data_return_mode= DataReturnMode.FILTERED_AND_SORTED, 
+            update_mode= GridUpdateMode.SELECTION_CHANGED,
             fit_columns_on_grid_load=False,
             height=300,
             theme='streamlit'
@@ -979,12 +975,21 @@ elif mode == "🛠️ 관리자 모드 (Admin)":
         # (이하 선택된 행 처리 로직은 기존과 동일)
         selected = grid_response['selected_rows']
         
-        # [Bug Fix] selected가 DataFrame으로 반환될 경우 리스트(Dict)로 변환 ✨
+        # [핵심 수정 2] 데이터프레임 변환 최적화 (비어있으면 변환 안 함) ✨
+        target_q_data = None
+        
         if isinstance(selected, pd.DataFrame):
-            selected = selected.to_dict('records')
-
-        # 이제 selected는 항상 리스트이므로 안전하게 접근 가능
-        target_q_data = selected[0] if selected else None
+            if not selected.empty:
+                # 첫 번째 행만 딕셔너리로 변환 (전체 변환 방지)
+                target_q_data = selected.iloc[0].to_dict()
+                import json
+                try:
+                    json.dumps(target_q_data) # 테스트
+                except:
+                    target_q_data = selected.to_dict('records')[0]
+                    
+        elif isinstance(selected, list) and len(selected) > 0:
+            target_q_data = selected[0]
         
         st.divider()
 
